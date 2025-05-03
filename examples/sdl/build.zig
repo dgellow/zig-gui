@@ -11,12 +11,18 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    const gui_dep = b.dependency("gui", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_mod.addImport("gui", gui_dep.module("gui"));
+    // exe_mod.linkLibrary(gui_dep.artifact("gui"));
+
     const sdl_dep = b.dependency("sdl", .{
         .target = target,
         .optimize = optimize,
     });
-    const sdl_lib = sdl_dep.artifact("SDL3");
-    exe_mod.linkLibrary(sdl_lib);
+    exe_mod.linkLibrary(sdl_dep.artifact("SDL3"));
 
     const exe = b.addExecutable(.{
         .name = "sdl_example",

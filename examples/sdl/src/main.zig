@@ -1,12 +1,8 @@
 const std = @import("std");
-const sdl = @cImport({
-    @cDefine("SDL_DISABLE_OLD_NAMES", {});
-    @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3/SDL_revision.h");
-    @cDefine("SDL_MAIN_HANDLED", {}); // We are providing our own entry point
-    @cInclude("SDL3/SDL_main.h");
-});
+
+const c = @import("c.zig").mod;
 const gui = @import("gui");
+const SDLRenderer = @import("SDLRenderer.zig");
 
 // Sample application code
 pub fn main() !void {
@@ -15,20 +11,20 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize SDL (application owns SDL)
-    if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO) != 0) {
+    if (c.SDL_Init(c.SDL_INIT_VIDEO)) {
         return error.SDLInitFailed;
     }
-    defer sdl.SDL_Quit();
+    defer c.SDL_Quit();
 
     // Create window and renderer (owned by application)
-    var window = sdl.SDL_CreateWindow("SDL Demo", sdl.SDL_WINDOWPOS_UNDEFINED, sdl.SDL_WINDOWPOS_UNDEFINED, 800, 600, sdl.SDL_WINDOW_SHOWN) orelse return error.WindowCreationFailed;
-    defer sdl.SDL_DestroyWindow(window);
+    const window = c.SDL_CreateWindow("SDL Demo", 800, 600, 0) orelse return error.WindowCreationFailed;
+    defer c.SDL_DestroyWindow(window);
 
-    var sdl_renderer = sdl.SDL_CreateRenderer(window, -1, sdl.SDL_RENDERER_ACCELERATED | sdl.SDL_RENDERER_PRESENTVSYNC) orelse return error.RendererCreationFailed;
-    defer sdl.SDL_DestroyRenderer(sdl_renderer);
+    const sdl_renderer = c.SDL_CreateRenderer(window, null) orelse return error.RendererCreationFailed;
+    defer c.SDL_DestroyRenderer(sdl_renderer);
 
     // Create gui renderer adapter (wraps SDL renderer)
-    var renderer = try gui.renderers.SdlRenderer.init(allocator, sdl_renderer);
+    var renderer = try SDLRenderer.init(allocator, sdl_renderer);
     defer renderer.deinit();
 
     // Initialize GUI with SDL renderer adapter
@@ -42,7 +38,7 @@ pub fn main() !void {
     // Add a blue rectangle
     var rect = try gui.components.Rectangle.create(allocator);
     rect.setStyle(.{
-        .background_color = gui.Color.fromRgba(0, 0, 255, 255),
+        .background_color = gui.Color.fromRGBA(0, 0, 255, 255),
         .width = 200,
         .height = 100,
         .margin = gui.EdgeInsets{ .left = 50, .top = 50 },
@@ -53,9 +49,9 @@ pub fn main() !void {
     var running = true;
     while (running) {
         // Process events
-        var event: sdl.SDL_Event = undefined;
-        while (sdl.SDL_PollEvent(&event) != 0) {
-            if (event.type == sdl.SDL_QUIT) {
+        var event: c.SDL_Event = undefined;
+        while (c.SDL_PollEvent(&event) != 0) {
+            if (event.type == c.SDL_QUIT) {
                 running = false;
                 break;
             }
