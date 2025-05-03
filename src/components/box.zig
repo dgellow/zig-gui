@@ -3,41 +3,33 @@ const View = @import("view.zig").View;
 const RenderContext = @import("../renderer.zig").RenderContext;
 const Rect = @import("../core/geometry.zig").Rect;
 const Size = @import("../core/geometry.zig").Size;
-const Point = @import("../core/geometry.zig").Point;
 const UIEvent = @import("../events.zig").UIEvent;
 const Color = @import("../core/color.zig").Color;
 const LayoutParams = @import("../layout.zig").LayoutParams;
-const FlexDirection = @import("../layout.zig").FlexDirection;
-const JustifyContent = @import("../layout.zig").JustifyContent;
-const AlignItems = @import("../layout.zig").AlignItems;
-const EdgeInsets = @import("../core/geometry.zig").EdgeInsets;
+const LengthConstraint = @import("../layout.zig").LengthConstraint;
 
-/// Container component that can hold and layout child views
-pub const Container = struct {
+/// Box component for drawing rectangles with optional rounded corners
+pub const Box = struct {
     const Self = @This();
 
     view: View,
 
-    /// Create a new container
-    pub fn create(allocator: std.mem.Allocator) !*Container {
-        var container = try allocator.create(Container);
-        container.* = .{
-            .view = View.init(allocator, container, &vtable),
+    /// Create a new box
+    pub fn create(allocator: std.mem.Allocator) !*Self {
+        var rect = try allocator.create(Self);
+        rect.* = .{
+            .view = View.init(allocator, rect, &vtable),
         };
 
-        // Initialize with default container layout params
-        container.view.layout_params = LayoutParams{
-            .flex_direction = .column,
-            .justify_content = .start,
-            .align_items = .stretch,
-        };
+        // Initialize with default box style
+        rect.view.style.background_color = Color.fromRGB(200, 200, 200);
 
-        return container;
+        return rect;
     }
 
-    /// Free resources used by this container
-    pub fn deinit(self: *Container) void {
-        // Free children first
+    /// Free resources used by this box
+    pub fn deinit(self: *Self) void {
+        // Free children
         for (self.view.children.items) |child| {
             child.deinit();
         }
@@ -48,59 +40,73 @@ pub const Container = struct {
         allocator.destroy(self);
     }
 
-    /// Add a child view to this container
-    pub fn addChild(self: *Container, child: *View) !void {
-        try self.view.addChild(child);
+    /// Set background color
+    pub fn setColor(self: *Self, color: Color) void {
+        var style = self.view.style;
+        style.background_color = color;
+        self.view.setStyle(style);
     }
 
-    /// Remove a child view from this container
-    pub fn removeChild(self: *Container, child: *View) !void {
-        try self.view.removeChild(child);
+    /// Set border color
+    pub fn setBorderColor(self: *Self, color: Color) void {
+        var style = self.view.style;
+        style.border_color = color;
+        self.view.setStyle(style);
     }
 
-    /// Remove all child views
-    pub fn removeAllChildren(self: *Container) void {
-        self.view.removeAllChildren();
+    /// Set border width
+    pub fn setBorderWidth(self: *Self, width: f32) void {
+        var style = self.view.style;
+        style.border_width = width;
+        self.view.setStyle(style);
     }
 
-    /// Set layout direction
-    pub fn setDirection(self: *Container, direction: FlexDirection) void {
+    /// Set corner radius
+    pub fn setCornerRadius(self: *Self, radius: f32) void {
+        var style = self.view.style;
+        style.border_radius = radius;
+        self.view.setStyle(style);
+    }
+
+    /// Set fixed size
+    pub fn setSize(self: *Self, width: f32, height: f32) void {
         var params = self.view.layout_params;
-        params.flex_direction = direction;
+        params.width = LengthConstraint{ .fixed = width };
+        params.height = LengthConstraint{ .fixed = height };
         self.view.setLayoutParams(params);
     }
 
-    /// Set main axis alignment
-    pub fn setJustifyContent(self: *Container, justify: JustifyContent) void {
+    /// Set width
+    pub fn setWidth(self: *Self, width: f32) void {
         var params = self.view.layout_params;
-        params.justify_content = justify;
+        params.width = LengthConstraint{ .fixed = width };
         self.view.setLayoutParams(params);
     }
 
-    /// Set cross axis alignment
-    pub fn setAlignItems(self: *Container, aligment: AlignItems) void {
+    /// Set height
+    pub fn setHeight(self: *Self, height: f32) void {
         var params = self.view.layout_params;
-        params.align_items = aligment;
+        params.height = LengthConstraint{ .fixed = height };
         self.view.setLayoutParams(params);
     }
 
-    /// Set padding
-    pub fn setPadding(self: *Container, padding: EdgeInsets) void {
+    /// Set percentage width
+    pub fn setPercentWidth(self: *Self, percent: f32) void {
         var params = self.view.layout_params;
-        params.padding = padding;
+        params.width = LengthConstraint{ .percentage = percent / 100.0 };
         self.view.setLayoutParams(params);
     }
 
-    /// Set margins
-    pub fn setMargin(self: *Container, margin: EdgeInsets) void {
+    /// Set percentage height
+    pub fn setPercentHeight(self: *Self, percent: f32) void {
         var params = self.view.layout_params;
-        params.margin = margin;
+        params.height = LengthConstraint{ .percentage = percent / 100.0 };
         self.view.setLayoutParams(params);
     }
 
     /// Set style properties
-    pub fn setStyle(self: *Container, style: anytype) void {
-        // Handle container-specific style properties
+    pub fn setStyle(self: *Self, style: anytype) void {
+        // Handle box-specific style properties
         const T = @TypeOf(style);
 
         // This uses Zig's comptime reflection to check for fields
@@ -119,7 +125,7 @@ pub const Container = struct {
     // Implement vtable methods
     fn build(view: *View) void {
         _ = view;
-        // Containers don't need to build anything
+        // Boxes don't need to build anything
     }
 
     fn layout(view: *View, constraint: Size) Size {
@@ -161,14 +167,16 @@ pub const Container = struct {
     }
 
     fn paint(view: *View, context: *const RenderContext) void {
-        // Only draw background if color is specified
-        if (view.style.background_color) |color| {
-            // Check if we have rounded corners
-            if (view.style.border_radius) |radius| {
-                context.renderer.vtable.drawRoundRect(context.renderer, view.rect, radius, .{ .color = color });
-            } else {
-                context.renderer.vtable.drawRect(context.renderer, view.rect, .{ .color = color });
-            }
+        // Get background color with fallback to transparent
+        const background_color = view.style.background_color orelse Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
+
+        // Check if we have rounded corners
+        if (view.style.border_radius) |radius| {
+            // Draw rounded box
+            context.renderer.vtable.drawRoundRect(context.renderer, view.rect, radius, .{ .color = background_color });
+        } else {
+            // Draw regular box
+            context.renderer.vtable.drawRect(context.renderer, view.rect, .{ .color = background_color });
         }
 
         // Draw border if specified
@@ -184,7 +192,7 @@ pub const Container = struct {
                     .stroke_width = border_width,
                 });
             } else {
-                // Draw rectangle border
+                // Draw box border
                 context.renderer.vtable.drawRect(context.renderer, view.rect, .{
                     .color = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, // Transparent fill
                     .stroke_color = border_color,
@@ -197,8 +205,7 @@ pub const Container = struct {
     fn handleEvent(view: *View, event: *UIEvent) bool {
         _ = view;
         _ = event;
-        // Basic container doesn't handle any events itself
-        // Events will be passed to its children
+        // Basic box doesn't handle any events
         return false;
     }
 

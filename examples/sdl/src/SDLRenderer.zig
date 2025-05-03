@@ -64,7 +64,7 @@ pub fn deinit(self: *Self) void {
 
 // Implementation functions for the vtable
 fn beginFrame(renderer: *gui.RendererInterface, width: f32, height: f32) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
     _ = c.SDL_SetRenderDrawColor(self.sdl_renderer, 255, 255, 255, 255);
     _ = c.SDL_RenderClear(self.sdl_renderer);
     _ = width;
@@ -72,18 +72,18 @@ fn beginFrame(renderer: *gui.RendererInterface, width: f32, height: f32) void {
 }
 
 fn endFrame(renderer: *gui.RendererInterface) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
-    c.SDL_RenderPresent(self.sdl_renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
+    _ = c.SDL_RenderPresent(self.sdl_renderer);
 }
 
 fn drawRect(renderer: *gui.RendererInterface, rect: gui.Rect, paint: gui.Paint) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
-    const sdl_rect = c.SDL_Rect{
-        .x = @intFromFloat(rect.x),
-        .y = @intFromFloat(rect.y),
-        .w = @intFromFloat(rect.width),
-        .h = @intFromFloat(rect.height),
+    const sdl_rect = c.SDL_FRect{
+        .x = rect.x,
+        .y = rect.y,
+        .w = rect.width,
+        .h = rect.height,
     };
 
     // Set color from paint
@@ -105,7 +105,7 @@ fn drawRect(renderer: *gui.RendererInterface, rect: gui.Rect, paint: gui.Paint) 
         _ = c.SDL_SetRenderDrawColor(self.sdl_renderer, stroke_color.r, stroke_color.g, stroke_color.b, stroke_color.a);
 
         // Draw outline
-        _ = c.SDL_RenderDrawRect(self.sdl_renderer, &sdl_rect);
+        _ = c.SDL_RenderRect(self.sdl_renderer, &sdl_rect);
 
         // Restore fill color
         _ = c.SDL_SetRenderDrawColor(self.sdl_renderer, self.current_color.r, self.current_color.g, self.current_color.b, self.current_color.a);
@@ -113,7 +113,7 @@ fn drawRect(renderer: *gui.RendererInterface, rect: gui.Rect, paint: gui.Paint) 
 }
 
 fn drawRoundRect(renderer: *gui.RendererInterface, rect: gui.Rect, radius: f32, paint: gui.Paint) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // SDL doesn't have built-in rounded rectangle drawing
     // For now, we'll draw a regular rectangle as a simplification
@@ -124,7 +124,7 @@ fn drawRoundRect(renderer: *gui.RendererInterface, rect: gui.Rect, radius: f32, 
 }
 
 fn drawText(renderer: *gui.RendererInterface, text: []const u8, position: gui.Point, paint: gui.Paint) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // Basic text rendering requires SDL_ttf
     // This is a placeholder for now
@@ -149,29 +149,29 @@ fn drawText(renderer: *gui.RendererInterface, text: []const u8, position: gui.Po
 }
 
 fn drawImage(renderer: *gui.RendererInterface, image_handle: gui.ImageHandle, rect: gui.Rect, paint: gui.Paint) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     if (!image_handle.isValid()) return;
 
     // Try to find the image in our map
     if (self.images.get(image_handle.id)) |sdl_image| {
-        const sdl_rect = c.SDL_Rect{
-            .x = @intFromFloat(rect.x),
-            .y = @intFromFloat(rect.y),
-            .w = @intFromFloat(rect.width),
-            .h = @intFromFloat(rect.height),
+        const sdl_rect = c.SDL_FRect{
+            .x = rect.x,
+            .y = rect.y,
+            .w = rect.width,
+            .h = rect.height,
         };
 
         // Set blend mode based on paint
         _ = c.SDL_SetTextureAlphaMod(sdl_image.texture, @intFromFloat(paint.opacity * 255.0));
 
         // Render the texture
-        _ = c.SDL_RenderCopy(self.sdl_renderer, sdl_image.texture, null, &sdl_rect);
+        _ = c.SDL_RenderTexture(self.sdl_renderer, sdl_image.texture, null, &sdl_rect);
     }
 }
 
 fn drawPath(renderer: *gui.RendererInterface, path: gui.Path, paint: gui.Paint) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // SDL doesn't have direct path rendering
     // For a basic implementation, we can draw lines between points
@@ -185,26 +185,26 @@ fn drawPath(renderer: *gui.RendererInterface, path: gui.Path, paint: gui.Paint) 
     _ = c.SDL_SetRenderDrawColor(self.sdl_renderer, paint.color.r, paint.color.g, paint.color.b, paint.color.a);
 
     var point_index: usize = 0;
-    var last_x: c_int = 0;
-    var last_y: c_int = 0;
+    var last_x: f32 = 0;
+    var last_y: f32 = 0;
 
     for (path.commands.items) |cmd| {
         switch (cmd) {
             .move_to => {
                 if (point_index < path.points.items.len) {
                     const point = path.points.items[point_index];
-                    last_x = @intFromFloat(point.x);
-                    last_y = @intFromFloat(point.y);
+                    last_x = point.x;
+                    last_y = point.y;
                     point_index += 1;
                 }
             },
             .line_to => {
                 if (point_index < path.points.items.len) {
                     const point = path.points.items[point_index];
-                    const x: c_int = @intFromFloat(point.x);
-                    const y: c_int = @intFromFloat(point.y);
+                    const x: f32 = point.x;
+                    const y: f32 = point.y;
 
-                    _ = c.SDL_RenderDrawLine(self.sdl_renderer, last_x, last_y, x, y);
+                    _ = c.SDL_RenderLine(self.sdl_renderer, last_x, last_y, x, y);
 
                     last_x = x;
                     last_y = y;
@@ -233,12 +233,12 @@ fn drawPath(renderer: *gui.RendererInterface, path: gui.Path, paint: gui.Paint) 
 }
 
 fn createImage(renderer: *gui.RendererInterface, width: u32, height: u32, format: gui.ImageFormat, data: ?[]const u8) ?gui.ImageHandle {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // Create a texture
-    const sdl_format = switch (format) {
+    const sdl_format: c_uint = switch (format) {
         .rgba8888 => c.SDL_PIXELFORMAT_RGBA32,
-        .rgbx8888 => c.SDL_PIXELFORMAT_RGB888,
+        .rgbx8888 => c.SDL_PIXELFORMAT_RGBX8888,
         .rgb888 => c.SDL_PIXELFORMAT_RGB24,
         .bgra8888 => c.SDL_PIXELFORMAT_BGRA32,
         .gray8 => c.SDL_PIXELFORMAT_INDEX8,
@@ -282,7 +282,7 @@ fn createImage(renderer: *gui.RendererInterface, width: u32, height: u32, format
 }
 
 fn destroyImage(renderer: *gui.RendererInterface, handle: gui.ImageHandle) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     if (!handle.isValid()) return;
 
@@ -293,7 +293,7 @@ fn destroyImage(renderer: *gui.RendererInterface, handle: gui.ImageHandle) void 
 }
 
 fn createFont(renderer: *gui.RendererInterface, data: []const u8, size: f32) ?gui.FontHandle {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // SDL doesn't have built-in font handling
     // This would typically use SDL_ttf
@@ -317,7 +317,7 @@ fn createFont(renderer: *gui.RendererInterface, data: []const u8, size: f32) ?gu
 }
 
 fn destroyFont(renderer: *gui.RendererInterface, handle: gui.FontHandle) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     if (!handle.isValid()) return;
 
@@ -326,11 +326,11 @@ fn destroyFont(renderer: *gui.RendererInterface, handle: gui.FontHandle) void {
 }
 
 fn save(renderer: *gui.RendererInterface) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // Save current clip rect
     var clip_rect: c.SDL_Rect = undefined;
-    _ = c.SDL_RenderGetClipRect(self.sdl_renderer, &clip_rect);
+    _ = c.SDL_GetRenderClipRect(self.sdl_renderer, &clip_rect);
     self.saved_clip_rects.append(clip_rect) catch {};
 
     // Save current color
@@ -338,24 +338,24 @@ fn save(renderer: *gui.RendererInterface) void {
 }
 
 fn restore(renderer: *gui.RendererInterface) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // Restore clip rect if there's one saved
     if (self.saved_clip_rects.items.len > 0) {
-        const clip_rect = self.saved_clip_rects.pop();
-        _ = c.SDL_RenderSetClipRect(self.sdl_renderer, &clip_rect);
+        const clip_rect = self.saved_clip_rects.pop() orelse unreachable;
+        _ = c.SDL_SetRenderClipRect(self.sdl_renderer, &clip_rect);
     }
 
     // Restore color if there's one saved
     if (self.saved_colors.items.len > 0) {
-        const color = self.saved_colors.pop();
+        const color = self.saved_colors.pop() orelse unreachable;
         _ = c.SDL_SetRenderDrawColor(self.sdl_renderer, color.r, color.g, color.b, color.a);
         self.current_color = color;
     }
 }
 
 fn clip(renderer: *gui.RendererInterface, rect: gui.Rect) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     const sdl_rect = c.SDL_Rect{
         .x = @intFromFloat(rect.x),
@@ -364,11 +364,11 @@ fn clip(renderer: *gui.RendererInterface, rect: gui.Rect) void {
         .h = @intFromFloat(rect.height),
     };
 
-    _ = c.SDL_RenderSetClipRect(self.sdl_renderer, &sdl_rect);
+    _ = c.SDL_SetRenderClipRect(self.sdl_renderer, &sdl_rect);
 }
 
 fn transform(renderer: *gui.RendererInterface, trans: gui.Transform) void {
-    const self: Self = @fieldParentPtr("renderer_interface", renderer);
+    const self: *Self = @fieldParentPtr("renderer_interface", renderer);
 
     // SDL doesn't support direct transforms in the renderer
     // This would require custom transformation in rendering pipeline

@@ -67,27 +67,27 @@ pub const RendererInterface = struct {
 
     pub const VTable = struct {
         // Context management
-        beginFrame: fn(self: *RendererInterface, width: f32, height: f32) void,
-        endFrame: fn(self: *RendererInterface) void,
+        beginFrame: *const fn(self: *RendererInterface, width: f32, height: f32) void,
+        endFrame: *const fn(self: *RendererInterface) void,
 
         // Drawing primitives
-        drawRect: fn(self: *RendererInterface, rect: Rect, paint: Paint) void,
-        drawRoundRect: fn(self: *RendererInterface, rect: Rect, radius: f32, paint: Paint) void,
-        drawText: fn(self: *RendererInterface, text: []const u8, position: Point, paint: Paint) void,
-        drawImage: fn(self: *RendererInterface, image_handle: ImageHandle, rect: Rect, paint: Paint) void,
-        drawPath: fn(self: *RendererInterface, path: Path, paint: Paint) void,
+        drawRect: *const fn(self: *RendererInterface, rect: Rect, paint: Paint) void,
+        drawRoundRect: *const fn(self: *RendererInterface, rect: Rect, radius: f32, paint: Paint) void,
+        drawText: *const fn(self: *RendererInterface, text: []const u8, position: Point, paint: Paint) void,
+        drawImage: *const fn(self: *RendererInterface, image_handle: ImageHandle, rect: Rect, paint: Paint) void,
+        drawPath: *const fn(self: *RendererInterface, path: Path, paint: Paint) void,
 
         // Resource management
-        createImage: fn(self: *RendererInterface, width: u32, height: u32, format: ImageFormat, data: ?[]const u8) ?ImageHandle,
-        destroyImage: fn(self: *RendererInterface, handle: ImageHandle) void,
-        createFont: fn(self: *RendererInterface, data: []const u8, size: f32) ?FontHandle,
-        destroyFont: fn(self: *RendererInterface, handle: FontHandle) void,
+        createImage: *const fn(self: *RendererInterface, width: u32, height: u32, format: ImageFormat, data: ?[]const u8) ?ImageHandle,
+        destroyImage: *const fn(self: *RendererInterface, handle: ImageHandle) void,
+        createFont: *const fn(self: *RendererInterface, data: []const u8, size: f32) ?FontHandle,
+        destroyFont: *const fn(self: *RendererInterface, handle: FontHandle) void,
 
         // State management
-        save: fn(self: *RendererInterface) void,
-        restore: fn(self: *RendererInterface) void,
-        clip: fn(self: *RendererInterface, rect: Rect) void,
-        transform: fn(self: *RendererInterface, transform: Transform) void,
+        save: *const fn(self: *RendererInterface) void,
+        restore: *const fn(self: *RendererInterface) void,
+        clip: *const fn(self: *RendererInterface, rect: Rect) void,
+        transform: *const fn(self: *RendererInterface, transform: Transform) void,
     };
 };
 ```
@@ -99,10 +99,10 @@ pub const MinimalRendererInterface = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        beginFrame: fn(self: *MinimalRendererInterface, width: f32, height: f32) void,
-        endFrame: fn(self: *MinimalRendererInterface) void,
-        drawRect: fn(self: *MinimalRendererInterface, rect: Rect, color: Color) void,
-        drawText: fn(self: *MinimalRendererInterface, text: []const u8, position: Point, color: Color, font_size: f32) void,
+        beginFrame: *const fn(self: *MinimalRendererInterface, width: f32, height: f32) void,
+        endFrame: *const fn(self: *MinimalRendererInterface) void,
+        drawRect: *const fn(self: *MinimalRendererInterface, rect: Rect, color: Color) void,
+        drawText: *const fn(self: *MinimalRendererInterface, text: []const u8, position: Point, color: Color, font_size: f32) void,
     };
 };
 ```
@@ -158,11 +158,11 @@ pub const View = struct {
     dirty_render: bool = true,
 
     pub const VTable = struct {
-        build: fn(*View) void,
-        layout: fn(*View, Size) Size,
-        paint: fn(*View, *RenderContext) void,
-        handleEvent: fn(*View, *Event) bool,
-        deinit: fn(*View) void,
+        build: *const fn(*View) void,
+        layout: *const fn(*View, Size) Size,
+        paint: *const fn(*View, *RenderContext) void,
+        handleEvent: *const fn(*View, *Event) bool,
+        deinit: *const fn(*View) void,
     };
 
     pub fn requestRebuild(self: *View) void {
@@ -238,9 +238,9 @@ pub const LayoutEngineExtension = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        measureComponent: fn(*LayoutEngineExtension, *View, Size) Size,
-        arrangeChildren: fn(*LayoutEngineExtension, *View, Rect) void,
-        supportedLayoutType: fn(*LayoutEngineExtension) LayoutType,
+        measureComponent: *const fn(*LayoutEngineExtension, *View, Size) Size,
+        arrangeChildren: *const fn(*LayoutEngineExtension, *View, Rect) void,
+        supportedLayoutType: *const fn(*LayoutEngineExtension) LayoutType,
     };
 };
 ```
@@ -552,23 +552,23 @@ pub const Platform = struct {
 
     pub const VTable = struct {
         // Window/display management
-        createWindow: fn(title: []const u8, width: u32, height: u32) !*Window,
-        getCurrentScreenSize: fn() Size,
+        createWindow: *const fn(title: []const u8, width: u32, height: u32) !*Window,
+        getCurrentScreenSize: *const fn() Size,
 
         // Input handling
-        pollEvents: fn(*EventManager) void,
-        getPointerLocation: fn() Point,
+        pollEvents: *const fn(*EventManager) void,
+        getPointerLocation: *const fn() Point,
 
         // Rendering
-        createRenderer: fn(window: *Window) !*GraphicsAPI,
-        swapBuffers: fn(window: *Window) void,
+        createRenderer: *const fn(window: *Window) !*GraphicsAPI,
+        swapBuffers: *const fn(window: *Window) void,
 
         // File system
-        loadAsset: fn(path: []const u8, out_data: *[]u8) !void,
+        loadAsset: *const fn(path: []const u8, out_data: *[]u8) !void,
 
         // Clipboard
-        setClipboardText: fn(text: []const u8) !void,
-        getClipboardText: fn(allocator: std.mem.Allocator) ![]u8,
+        setClipboardText: *const fn(text: []const u8) !void,
+        getClipboardText: *const fn(allocator: std.mem.Allocator) ![]u8,
     };
 };
 ```

@@ -36,22 +36,22 @@ pub fn main() !void {
     ui.setRootView(&container.view);
 
     // Add a blue rectangle
-    var rect = try gui.components.Rectangle.create(allocator);
-    rect.setStyle(.{
+    var box = try gui.components.Box.create(allocator);
+    box.setStyle(.{
         .background_color = gui.Color.fromRGBA(0, 0, 255, 255),
         .width = 200,
         .height = 100,
-        .margin = gui.EdgeInsets{ .left = 50, .top = 50 },
+        .margin = gui.EdgeInsets{ .left = 50, .top = 50, .right = 0, .bottom = 0 },
     });
-    try container.addChild(&rect.view);
+    try container.addChild(&box.view);
 
     // Basic event loop (application owns the event loop)
     var running = true;
     while (running) {
         // Process events
         var event: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&event) != 0) {
-            if (event.type == c.SDL_QUIT) {
+        while (c.SDL_PollEvent(&event)) {
+            if (event.type == c.SDL_EVENT_QUIT) {
                 running = false;
                 break;
             }
