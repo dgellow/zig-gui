@@ -114,7 +114,7 @@ pub const Box = struct {
         var view_style = self.view.style;
 
         inline for (std.meta.fields(T)) |field| {
-            if (std.meta.fieldIndex(std.meta.fields(@TypeOf(view_style)), field.name)) |_| {
+            if (std.meta.fieldIndex(@TypeOf(view_style), field.name)) |_| {
                 @field(view_style, field.name) = @field(style, field.name);
             }
         }

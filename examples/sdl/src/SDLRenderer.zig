@@ -65,8 +65,16 @@ pub fn deinit(self: *Self) void {
 // Implementation functions for the vtable
 fn beginFrame(renderer: *gui.RendererInterface, width: f32, height: f32) void {
     const self: *Self = @fieldParentPtr("renderer_interface", renderer);
-    _ = c.SDL_SetRenderDrawColor(self.sdl_renderer, 255, 255, 255, 255);
-    _ = c.SDL_RenderClear(self.sdl_renderer);
+    if (!c.SDL_SetRenderDrawColor(self.sdl_renderer, 255, 255, 255, 255)) {
+        const err = c.SDL_GetError();
+        std.log.err("SDL_SetRenderDrawColor failed: {s}\n", .{err});
+        return;
+    }
+    if (!c.SDL_RenderClear(self.sdl_renderer)) {
+        const err = c.SDL_GetError();
+        std.log.err("SDL_RenderClear failed: {s}\n", .{err});
+        return;
+    }
     _ = width;
     _ = height;
 }

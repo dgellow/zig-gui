@@ -137,6 +137,7 @@ const FlexLine = struct {
     main_size: f32 = 0,
     cross_size: f32 = 0,
     remaining_free_space: f32 = 0,
+    cross_pos: ?f32 = null,
 
     pub fn init(allocator: std.mem.Allocator) FlexLine {
         return .{
@@ -192,9 +193,9 @@ pub const LayoutEngine = struct {
     }
 
     /// Calculate layout for the entire view hierarchy
-    pub fn calculateLayout(self: *LayoutEngine, root_view: *View) void {
+    pub fn calculateLayout(self: *LayoutEngine, root_view: *View) !void {
         // Calculate layout starting from root
-        _ = self.calculateViewLayout(root_view, root_view.rect.size);
+        _ = try self.calculateViewLayout(root_view, root_view.rect.size());
 
         // Update positions based on calculated sizes
         self.updateViewPositions(root_view, Point{ .x = 0, .y = 0 });
@@ -204,7 +205,7 @@ pub const LayoutEngine = struct {
     }
 
     /// Calculate layout for a view and its children
-    fn calculateViewLayout(self: *LayoutEngine, view: *View, constraint: Size) Size {
+    fn calculateViewLayout(self: *LayoutEngine, view: *View, constraint: Size) !Size {
         // Skip if not visible
         if (!view.isVisible()) {
             return Size{ .width = 0, .height = 0 };
@@ -229,7 +230,7 @@ pub const LayoutEngine = struct {
 
         // If it's a container with children, arrange them
         if (view.children.items.len > 0) {
-            self.arrangeChildren(view, size);
+            try self.arrangeChildren(view, size);
         }
 
         return size;
@@ -263,7 +264,7 @@ pub const LayoutEngine = struct {
     }
 
     /// Arrange children according to flex layout rules
-    fn arrangeChildren(self: *LayoutEngine, view: *View, container_size: Size) void {
+    fn arrangeChildren(self: *LayoutEngine, view: *View, container_size: Size) std.mem.Allocator.Error!void {
         // Get layout parameters for the container
         const params = view.layout_params;
 
@@ -309,9 +310,11 @@ pub const LayoutEngine = struct {
             // Handle absolute positioned items separately
             if (child.layout_params.position_type == .absolute) {
                 // Measure absolute items with unbounded constraints
-                const absolute_size = self.calculateViewLayout(child, Size{
-                    .width = if (child.layout_params.width == .auto) std.math.inf(f32) else child.layout_params.width.resolve(available_main_axis),
-                    .height = if (child.layout_params.height == .auto) std.math.inf(f32) else child.layout_params.height.resolve(available_cross_axis),
+                const w = if (child.layout_params.width == .auto) std.math.inf(f32) else child.layout_params.width.resolve(available_main_axis);
+                const h = if (child.layout_params.height == .auto) std.math.inf(f32) else child.layout_params.height.resolve(available_cross_axis);
+                const absolute_size = try self.calculateViewLayout(child, Size{
+                    .width = w,
+                    .height = h,
                 });
 
                 try absolute_items.append(.{
@@ -366,7 +369,7 @@ pub const LayoutEngine = struct {
                         child_constraint.height = @min(child_constraint.height, max_h);
                     }
 
-                    const natural_size = self.calculateViewLayout(child, child_constraint);
+                    const natural_size = try self.calculateViewLayout(child, child_constraint);
 
                     // Use the measured size for flex basis
                     flex_basis = if (is_horizontal) natural_size.width else natural_size.height;
@@ -575,26 +578,29 @@ pub const LayoutEngine = struct {
                     // Distribute extra space to each line proportionally
                     if (remaining_cross > 0) {
                         for (lines.items) |*line| {
-                            line.cross_size += remaining_cross / @as(f32, lines.items.len);
+                            const len: f32 = @floatFromInt(line.items.items.len);
+                            line.cross_size += remaining_cross / len;
                         }
                     }
                 },
                 .space_between => {
                     if (lines.items.len > 1 and remaining_cross > 0) {
-                        const space_between = remaining_cross / @as(f32, lines.items.len - 1);
+                        const len: f32 = @floatFromInt(lines.items.len);
+                        const space_between = remaining_cross / (len - 1);
                         for (lines.items[1..], 0..) |*line, i| {
-                            line.cross_pos = cross_axis_offset +
-                                @as(f32, i + 1) * space_between;
+                            const i_f: f32 = @floatFromInt(i);
+                            line.cross_pos = cross_axis_offset + i_f + 1 * space_between;
                         }
                     }
                 },
                 .space_around => {
                     if (remaining_cross > 0) {
-                        const space_around = remaining_cross / @as(f32, lines.items.len * 2);
+                        const len: f32 = @floatFromInt(lines.items.len);
+                        const space_around = remaining_cross / (len * 2);
                         cross_axis_offset += space_around;
                         for (lines.items, 0..) |*line, i| {
-                            line.cross_pos = cross_axis_offset +
-                                @as(f32, i * 2 + 1) * space_around;
+                            const i_f: f32 = @floatFromInt(i);
+                            line.cross_pos = cross_axis_offset + (i_f * 2 + 1) * space_around;
                         }
                     }
                 },
@@ -619,31 +625,30 @@ pub const LayoutEngine = struct {
                     },
                     .space_between => {
                         if (line.items.items.len > 1) {
-                            const space_between = line.remaining_free_space /
-                                @as(f32, line.items.items.len - 1);
+                            const len: f32 = @floatFromInt(line.items.items.len);
+                            const space_between = line.remaining_free_space / (len - 1);
                             for (line.items.items[1..], 0..) |*item, i| {
-                                item.main_pos = main_axis_offset +
-                                    item.flex_basis +
-                                    @as(f32, i + 1) * space_between;
+                                const i_f: f32 = @floatFromInt(i);
+                                item.main_pos = main_axis_offset + item.flex_basis + (i_f + 1) * space_between;
                             }
                         }
                     },
                     .space_around => {
-                        const space_around = line.remaining_free_space /
-                            @as(f32, line.items.items.len * 2);
+                        const len: f32 = @floatFromInt(line.items.items.len);
+                        const space_around = line.remaining_free_space / (len * 2);
                         main_axis_offset += space_around;
                         for (line.items.items, 0..) |*item, i| {
-                            item.main_pos = main_axis_offset +
-                                @as(f32, i * 2 + 1) * space_around;
+                            const i_f: f32 = @floatFromInt(i);
+                            item.main_pos = main_axis_offset + item.flex_basis + (i_f * 2 + 1) * space_around;
                         }
                     },
                     .space_evenly => {
-                        const space_evenly = line.remaining_free_space /
-                            @as(f32, line.items.items.len + 1);
+                        const len: f32 = @floatFromInt(line.items.items.len);
+                        const space_evenly = line.remaining_free_space / (len + 1);
                         main_axis_offset += space_evenly;
                         for (line.items.items, 0..) |*item, i| {
-                            item.main_pos = main_axis_offset +
-                                @as(f32, i) * space_evenly;
+                            const i_f: f32 = @floatFromInt(i);
+                            item.main_pos = main_axis_offset + i_f * space_evenly;
                         }
                     },
                 }

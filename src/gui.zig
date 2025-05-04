@@ -129,7 +129,7 @@ pub const GUI = struct {
     }
 
     /// Process input, update state, calculate layout, and render a frame
-    pub fn frame(self: *GUI, dt: f32) void {
+    pub fn frame(self: *GUI, dt: f32) !void {
         // Skip if no root view
         if (self.root_view == null) return;
 
@@ -148,7 +148,7 @@ pub const GUI = struct {
 
         // Calculate layout if needed
         if (self.layout_engine.needsLayout()) {
-            self.layout_engine.calculateLayout(self.root_view.?);
+            try self.layout_engine.calculateLayout(self.root_view.?);
         }
 
         // Render frame

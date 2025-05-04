@@ -53,7 +53,7 @@ pub const FontStyle = enum {
 
 /// Typography settings for a theme
 pub const Typography = struct {
-    font_family: []const u8 = "system-ui",
+    font_family: ?[]const u8 = null,
 
     // Font sizes
     font_size_small: f32 = 12.0,
@@ -92,7 +92,9 @@ pub const Typography = struct {
 
     /// Free resources used by this typography
     pub fn deinit(self: *Typography, allocator: std.mem.Allocator) void {
-        allocator.free(self.font_family);
+        if (self.font_family) |font_family| {
+            allocator.free(font_family);
+        }
     }
 };
 

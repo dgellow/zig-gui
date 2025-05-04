@@ -20,6 +20,13 @@ pub const ValueUnion = union(ValueType) {
     point: Point,
     rect: Rect,
 
+    /// Interpolate between two int values of the same type
+    fn _interpolate(comptime T: type, start: T, end: T, t: f32) T {
+        const delta: f32 = @floatFromInt(end - start);
+        const delta_t: T = @intFromFloat(delta * t);
+        return start + delta_t;
+    }
+
     /// Interpolate between this value and another
     pub fn interpolate(self: ValueUnion, other: ValueUnion, t: f32) ValueUnion {
         switch (self) {
@@ -30,16 +37,17 @@ pub const ValueUnion = union(ValueType) {
             .integer => |start| {
                 if (other != .integer) return self;
                 const end = other.integer;
-                return ValueUnion{ .integer = start + @as(i32, @as(f32, end - start) * t) };
+
+                return ValueUnion{ .integer = _interpolate(i32, start, end, t) };
             },
             .color => |start| {
                 if (other != .color) return self;
                 const end = other.color;
                 return ValueUnion{ .color = Color{
-                    .r = @intFromFloat(@as(f32, start.r) + @as(f32, end.r - start.r) * t),
-                    .g = @intFromFloat(@as(f32, start.g) + @as(f32, end.g - start.g) * t),
-                    .b = @intFromFloat(@as(f32, start.b) + @as(f32, end.b - start.b) * t),
-                    .a = @intFromFloat(@as(f32, start.a) + @as(f32, end.a - start.a) * t),
+                    .r = _interpolate(u8, start.r, end.r, t),
+                    .g = _interpolate(u8, start.g, end.g, t),
+                    .b = _interpolate(u8, start.b, end.b, t),
+                    .a = _interpolate(u8, start.a, end.a, t),
                 } };
             },
             .point => |start| {

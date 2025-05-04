@@ -11,7 +11,9 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // Initialize SDL (application owns SDL)
-    if (c.SDL_Init(c.SDL_INIT_VIDEO)) {
+    if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
+        const err = c.SDL_GetError();
+        std.log.err("SDL_Init failed: {s}\n", .{err});
         return error.SDLInitFailed;
     }
     defer c.SDL_Quit();
@@ -38,10 +40,10 @@ pub fn main() !void {
     // Add a blue rectangle
     var box = try gui.components.Box.create(allocator);
     box.setStyle(.{
-        .background_color = gui.Color.fromRGBA(0, 0, 255, 255),
+        .background_color = gui.Color.fromRGBA(0, 0, 255, 100),
         .width = 200,
         .height = 100,
-        .margin = gui.EdgeInsets{ .left = 50, .top = 50, .right = 0, .bottom = 0 },
+        .margin = gui.EdgeInsets{ .left = 0, .top = 0, .right = 0, .bottom = 0 },
     });
     try container.addChild(&box.view);
 
@@ -60,6 +62,6 @@ pub fn main() !void {
         }
 
         // Render frame
-        ui.frame(1.0 / 60.0);
+        try ui.frame(1.0 / 60.0);
     }
 }

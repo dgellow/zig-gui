@@ -7,6 +7,10 @@ pub const Rect = struct {
     pub fn zero() Rect {
         return Rect{ .x = 0, .y = 0, .width = 0, .height = 0 };
     }
+
+    pub fn size(self: *const Rect) Size {
+        return Size{ .width = self.width, .height = self.height };
+    }
 };
 
 pub const Point = struct {

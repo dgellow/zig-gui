@@ -30,11 +30,11 @@ pub const Asset = struct {
     content_type: []const u8,
     ref_count: u32,
 
-    deinit_fn: *const fn (*Asset) void,
+    deinit_fn: *const fn (*Asset, *AssetManager) void,
 
     /// Free resources used by this asset
-    pub fn deinit(self: *Asset) void {
-        self.deinit_fn(self);
+    pub fn deinit(self: *Asset, manager: *AssetManager) void {
+        self.deinit_fn(self, manager);
     }
 };
 
@@ -129,7 +129,7 @@ pub const AssetManager = struct {
         // Free all loaded assets
         var asset_it = self.loaded_assets.valueIterator();
         while (asset_it.next()) |asset| {
-            asset.*.deinit();
+            asset.*.deinit(self);
             self.allocator.destroy(asset.*);
         }
         self.loaded_assets.deinit();
@@ -322,16 +322,11 @@ pub const AssetManager = struct {
             .content_type = "image",
             .ref_count = 1,
             .deinit_fn = struct {
-                fn deinit(asset_ptr: *Asset) void {
+                fn deinit(asset_ptr: *Asset, manager: *AssetManager) void {
                     // Get image handle
                     const img_handle: *ImageHandle = @ptrCast(@alignCast(asset_ptr.data));
 
                     // Free image using renderer
-                    const hash_map_1: *std.ArrayHashMapUnmanaged([]const u8, *Asset, std.hash_map.StringIndexContext, false) = @fieldParentPtr("entries", asset_ptr);
-                    const hash_map_2: *std.StringHashMapUnmanaged(*Asset) = @fieldParentPtr("unmanaged", hash_map_1);
-                    const hash_map_3: *std.StringHashMap(*Asset) = @fieldParentPtr("hash_map", hash_map_2);
-                    const manager: *Self = @fieldParentPtr("loaded_assets", hash_map_3);
-
                     if (manager.renderer) |renderer| {
                         renderer.vtable.destroyImage(renderer, img_handle.*);
                     }
@@ -442,22 +437,15 @@ pub const AssetManager = struct {
             .content_type = "image",
             .ref_count = 1,
             .deinit_fn = struct {
-                fn deinit(asset_ptr: *Asset) void {
+                fn deinit(asset_ptr: *Asset, manager: *Self) void {
                     // Get image handle
                     const img_handle: *ImageHandle = @ptrCast(@alignCast(asset_ptr.data));
-
-                    // Free image using renderer
-                    const hash_map_1: *std.ArrayHashMapUnmanaged([]const u8, *Asset, std.hash_map.StringIndexContext, false) = @fieldParentPtr("entries", asset_ptr);
-                    const hash_map_2: *std.StringHashMapUnmanaged(*Asset) = @fieldParentPtr("unmanaged", hash_map_1);
-                    const hash_map_3: *std.StringHashMap(*Asset) = @fieldParentPtr("hash_map", hash_map_2);
-                    const self2: *Self = @fieldParentPtr("loaded_assets", hash_map_3);
-
-                    if (self2.renderer) |renderer| {
+                    if (manager.renderer) |renderer| {
                         renderer.vtable.destroyImage(renderer, img_handle.*);
                     }
 
                     // Free image handle
-                    self2.allocator.destroy(img_handle);
+                    manager.allocator.destroy(img_handle);
                 }
             }.deinit,
         };
@@ -493,22 +481,18 @@ pub const AssetManager = struct {
             .content_type = "font",
             .ref_count = 1,
             .deinit_fn = struct {
-                fn deinit(asset_ptr: *Asset) void {
+                fn deinit(asset_ptr: *Asset, manager: *AssetManager) void {
+
                     // Get font handle
                     const fnt_Handle: *FontHandle = @ptrCast(@alignCast(asset_ptr.data));
 
                     // Free font using renderer
-                    const hash_map_1: *std.ArrayHashMapUnmanaged([]const u8, *Asset, std.hash_map.StringIndexContext, false) = @fieldParentPtr("entries", asset_ptr);
-                    const hash_map_2: *std.StringHashMapUnmanaged(*Asset) = @fieldParentPtr("unmanaged", hash_map_1);
-                    const hash_map_3: *std.StringHashMap(*Asset) = @fieldParentPtr("hash_map", hash_map_2);
-
-                    const self2: *Self = @fieldParentPtr("loaded_assets", hash_map_3);
-                    if (self2.renderer) |renderer| {
+                    if (manager.renderer) |renderer| {
                         renderer.vtable.destroyFont(renderer, fnt_Handle.*);
                     }
 
                     // Free font handle
-                    self2.allocator.destroy(fnt_Handle);
+                    manager.allocator.destroy(fnt_Handle);
                 }
             }.deinit,
         };
@@ -534,14 +518,11 @@ pub const AssetManager = struct {
             .content_type = "text/plain",
             .ref_count = 1,
             .deinit_fn = struct {
-                fn deinit(asset_ptr: *Asset) void {
+                fn deinit(asset_ptr: *Asset, manager: *AssetManager) void {
                     // Free text data
-                    const hash_map_1: *std.ArrayHashMapUnmanaged([]const u8, *Asset, std.hash_map.StringIndexContext, false) = @fieldParentPtr("entries", asset_ptr);
-                    const hash_map_2: *std.StringHashMapUnmanaged(*Asset) = @fieldParentPtr("unmanaged", hash_map_1);
-                    const hash_map_3: *std.StringHashMap(*Asset) = @fieldParentPtr("hash_map", hash_map_2);
-
-                    const self2: *Self = @fieldParentPtr("loaded_assets", hash_map_3);
-                    self2.allocator.free(@as([*]u8, asset_ptr.data)[0..asset_ptr.data_size]);
+                    const data_ptr: [*]u8 = @ptrCast(@alignCast(asset_ptr.data));
+                    const data_slice = data_ptr[0..asset_ptr.data_size];
+                    manager.allocator.free(data_slice);
                 }
             }.deinit,
         };
@@ -567,14 +548,11 @@ pub const AssetManager = struct {
             .content_type = "application/json",
             .ref_count = 1,
             .deinit_fn = struct {
-                fn deinit(asset_ptr: *Asset) void {
+                fn deinit(asset_ptr: *Asset, manager: *AssetManager) void {
                     // Free JSON data
-                    const hash_map_1: *std.ArrayHashMapUnmanaged([]const u8, *Asset, std.hash_map.StringIndexContext, false) = @fieldParentPtr("entries", asset_ptr);
-                    const hash_map_2: *std.StringHashMapUnmanaged(*Asset) = @fieldParentPtr("unmanaged", hash_map_1);
-                    const hash_map_3: *std.StringHashMap(*Asset) = @fieldParentPtr("hash_map", hash_map_2);
-
-                    const self2: *Self = @fieldParentPtr("loaded_assets", hash_map_3);
-                    self2.allocator.free(@as([*]u8, asset_ptr.data)[0..asset_ptr.data_size]);
+                    const data_ptr: [*]u8 = @ptrCast(@alignCast(asset_ptr.data));
+                    const data_slice = data_ptr[0..asset_ptr.data_size];
+                    manager.allocator.free(data_slice);
                 }
             }.deinit,
         };
@@ -600,14 +578,11 @@ pub const AssetManager = struct {
             .content_type = "application/octet-stream",
             .ref_count = 1,
             .deinit_fn = struct {
-                fn deinit(asset_ptr: *Asset) void {
+                fn deinit(asset_ptr: *Asset, manager: *AssetManager) void {
                     // Free binary data
-                    const hash_map_1: *std.ArrayHashMapUnmanaged([]const u8, *Asset, std.hash_map.StringIndexContext, false) = @fieldParentPtr("entries", asset_ptr);
-                    const hash_map_2: *std.StringHashMapUnmanaged(*Asset) = @fieldParentPtr("unmanaged", hash_map_1);
-                    const hash_map_3: *std.StringHashMap(*Asset) = @fieldParentPtr("hash_map", hash_map_2);
-
-                    const self2: *Self = @fieldParentPtr("loaded_assets", hash_map_3);
-                    self2.allocator.free(@as([*]u8, asset_ptr.data)[0..asset_ptr.data_size]);
+                    const data_ptr: [*]u8 = @ptrCast(@alignCast(asset_ptr.data));
+                    const data_slice = data_ptr[0..asset_ptr.data_size];
+                    manager.allocator.free(data_slice);
                 }
             }.deinit,
         };
