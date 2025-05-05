@@ -1,651 +1,90 @@
 # Cross-Platform GUI Library Specification
 
-This document outlines the project's architecture, core components, design principles, and overall vision. It is an inspirational document and not a strict specification or list of supported features and platforms.
+This document outlines the architecture, core components, design principles, and vision for Zig-GUI, a collection of libraries that work with Clay.h to deliver high-performance UI solutions across platforms. It serves as an inspirational document rather than a strict specification.
 
-## Core Architecture
+## Project Vision
 
-The library is built on a modular architecture with clear separation of concerns. It follows a data-oriented design approach, prioritizing memory layout, cache efficiency, and explicit control over abstractions.
+Zig-GUI is a collection of libraries that complement and extend the Clay.h immediate-mode GUI library. While Clay.h excels at layout and rendering, Zig-GUI provides Zig-native capabilities that enhance the developer experience and system capabilities:
 
-The primary components include:
+1. **State Management**: Zig-idiomatic reactive state that integrates with Clay's immediate-mode rendering
+2. **Asset Pipeline**: Type-safe loading and management of fonts, images, and audio resources
+3. **Platform Adapters**: Platform-specific integration for diverse targets
+4. **Domain-Specific Components**: Higher-level UI components for specialized applications
+5. **Performance Tooling**: Profiling and optimization tools
+
+The combined system targets a wide range of applications, from resource-constrained embedded systems (like the Teensy 4.1) to full-featured desktop and mobile applications.
+
+## Boundaries and Responsibilities
+
+### Clay.h Responsibilities
+
+Clay.h is the foundation of the UI system, providing:
+
+- Layout calculations and positioning
+- Rendering primitives and display
+- Input event handling and bubbling
+- Widget declaration and composition
+- Immediate-mode UI paradigm
+- Memory management for UI elements
+
+### Zig-GUI Responsibilities
+
+Zig-GUI complements Clay by providing:
+
+- Zig-idiomatic state management
+- Type-safe resource handling
+- Platform-specific integration
+- Higher-level composition patterns
+- Domain-specific components and utilities
+- Performance optimization tools
+- Reactive programming model
+
+## Architecture Overview
 
 ```zig
-pub const GUI = struct {
-    allocator: std.mem.Allocator,
-    renderer: *RendererInterface,
-    layout_engine: *LayoutEngine,
-    style_system: *StyleSystem,
-    event_manager: *EventManager,
-    state_store: *StateStore,
-    animation_system: ?*AnimationSystem,  // Optional, can be null
-    asset_manager: *AssetManager,
+// Top-level namespace organization
+pub const gui = struct {
+    // Clay bindings and core integration
+    pub const clay = @import("clay.zig");
 
-    root_view: *View,
+    // State management system
+    pub const state = @import("state.zig");
 
-    pub fn init(allocator: std.mem.Allocator, renderer: *RendererInterface, config: Config) !*GUI {
-        // Implementation details...
-    }
+    // Asset loading and management
+    pub const assets = @import("assets.zig");
 
-    pub fn deinit(self: *GUI) void {
-        // Implementation details...
-    }
+    // Platform integration
+    pub const platform = @import("platform.zig");
 
-    pub fn frame(self: *GUI, dt: f32) void {
-        // Process input, update state, calculate layout, render
-    }
+    // Standard components built on Clay
+    pub const components = @import("components.zig");
+
+    // Domain-specific extensions
+    pub const extensions = struct {
+        pub const audio = @import("extensions/audio.zig");
+        pub const data = @import("extensions/data.zig");
+        pub const charts = @import("extensions/charts.zig");
+    };
+
+    // Performance tools
+    pub const perf = @import("perf.zig");
 };
 ```
 
 The architecture emphasizes:
 
-1. Clear ownership of memory through explicit allocator usage
-2. Composition rather than inheritance
-3. Interface-based polymorphism for extension
-4. Explicit state management
-5. Performance optimization through data-oriented design
+1. **Modularity**: Each library can be used independently
+2. **Composition**: Libraries combine naturally without tight coupling
+3. **Performance**: Data-oriented design with minimal indirection
+4. **Explicit Management**: Clear ownership of resources and memory
+5. **Platform Flexibility**: Works across desktop, mobile, and embedded targets
 
-### Responsibilities and Boundaries
+## Clay Integration
 
-The library focuses on providing the core infrastructure for GUI components, layout, and rendering abstraction. It explicitly does NOT take ownership of:
-
-1. **Memory Management Strategy**: The library accepts allocators but doesn't dictate memory management approaches. Resource pooling, fragmentation handling, etc. are the responsibility of the application.
-
-2. **Threading Model**: The library is thread-model agnostic, allowing integration with various environments that may have their own threading constraints (game engines, single-threaded embedded systems, etc.).
-
-3. **Internationalization**: Basic text rendering is supported, but complex internationalization concerns (bidirectional text, locale-specific formatting) are primarily renderer responsibilities.
-
-4. **Platform-Specific Input Methods**: Advanced input methods are expected to be integrated by the platform-specific implementations.
-
-This clear separation of responsibilities aligns with Zig's philosophy of precise communication of intent and focusing on core functionality.
-
-## Bring Your Own Renderer
-
-The library uses a "bring your own renderer" approach with a well-defined interface. This provides flexibility to integrate with various rendering backends, from high-level graphics libraries to simple framebuffers.
+Zig-GUI integrates with Clay.h through idiomatic Zig bindings:
 
 ```zig
-pub const RendererInterface = struct {
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        // Context management
-        beginFrame: *const fn(self: *RendererInterface, width: f32, height: f32) void,
-        endFrame: *const fn(self: *RendererInterface) void,
-
-        // Drawing primitives
-        drawRect: *const fn(self: *RendererInterface, rect: Rect, paint: Paint) void,
-        drawRoundRect: *const fn(self: *RendererInterface, rect: Rect, radius: f32, paint: Paint) void,
-        drawText: *const fn(self: *RendererInterface, text: []const u8, position: Point, paint: Paint) void,
-        drawImage: *const fn(self: *RendererInterface, image_handle: ImageHandle, rect: Rect, paint: Paint) void,
-        drawPath: *const fn(self: *RendererInterface, path: Path, paint: Paint) void,
-
-        // Resource management
-        createImage: *const fn(self: *RendererInterface, width: u32, height: u32, format: ImageFormat, data: ?[]const u8) ?ImageHandle,
-        destroyImage: *const fn(self: *RendererInterface, handle: ImageHandle) void,
-        createFont: *const fn(self: *RendererInterface, data: []const u8, size: f32) ?FontHandle,
-        destroyFont: *const fn(self: *RendererInterface, handle: FontHandle) void,
-
-        // State management
-        save: *const fn(self: *RendererInterface) void,
-        restore: *const fn(self: *RendererInterface) void,
-        clip: *const fn(self: *RendererInterface, rect: Rect) void,
-        transform: *const fn(self: *RendererInterface, transform: Transform) void,
-    };
-};
-```
-
-For platforms with limited resources, a minimal renderer interface requires only essential operations:
-
-```zig
-pub const MinimalRendererInterface = struct {
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        beginFrame: *const fn(self: *MinimalRendererInterface, width: f32, height: f32) void,
-        endFrame: *const fn(self: *MinimalRendererInterface) void,
-        drawRect: *const fn(self: *MinimalRendererInterface, rect: Rect, color: Color) void,
-        drawText: *const fn(self: *MinimalRendererInterface, text: []const u8, position: Point, color: Color, font_size: f32) void,
-    };
-};
-```
-
-An adapter pattern allows expansion of minimal renderers to support the full interface:
-
-```zig
-pub const RendererAdapter = struct {
-    renderer_interface: RendererInterface,
-    minimal_renderer: *MinimalRendererInterface,
-
-    pub fn init(allocator: std.mem.Allocator, minimal_renderer: *MinimalRendererInterface) !*RendererAdapter {
-        // Create adapter to implement advanced features on top of minimal ones
-    }
-};
-```
-
-This approach supports integration with:
-
-- Skia for desktop and mobile platforms
-- Direct framebuffer access for embedded displays like the Teensy 4.1
-- Game engine renderers (SDL, Unreal, etc.)
-- Custom rendering contexts
-
-### Text Rendering Considerations
-
-The text rendering interface is intentionally simple, delegating complex text shaping to renderer implementations. This allows:
-
-1. Simple renderers to implement basic text rendering directly
-2. Advanced renderers to incorporate specialized libraries like HarfBuzz when appropriate
-3. Platform-specific text rendering to be used when available
-
-The library doesn't impose complex text shaping as a requirement, maintaining flexibility for constrained environments.
-
-## Component System
-
-The component system uses a composition-based approach with type erasure for polymorphism:
-
-```zig
-pub const View = struct {
-    id: u64,
-    rect: Rect,
-    parent: ?*View = null,
-    children: std.ArrayList(*View),
-
-    style: Style,
-    layout_params: LayoutParams,
-
-    data: *anyopaque,
-    vtable: *const VTable,
-
-    dirty_layout: bool = true,
-    dirty_render: bool = true,
-
-    pub const VTable = struct {
-        build: *const fn(*View) void,
-        layout: *const fn(*View, Size) Size,
-        paint: *const fn(*View, *RenderContext) void,
-        handleEvent: *const fn(*View, *Event) bool,
-        deinit: *const fn(*View) void,
-    };
-
-    pub fn requestRebuild(self: *View) void {
-        self.dirty_layout = true;
-        self.dirty_render = true;
-
-        // Propagate up to invalidate parent layouts
-        var parent = self.parent;
-        while (parent) |p| {
-            p.dirty_layout = true;
-            parent = p.parent;
-        }
-    }
-};
-```
-
-Components follow a lifecycle of creation, layout, paint, event handling, and disposal. Each component implements the View interface through its vtable.
-
-The library provides common components like containers, buttons, text fields, sliders, and layout components, each designed for optimal performance and memory usage.
-
-## Layout System
-
-The layout engine uses a Flexbox-inspired implementation as the primary layout mechanism:
-
-```zig
-pub const LayoutEngine = struct {
-    allocator: std.mem.Allocator,
-    dirty_views: std.AutoHashMap(u64, void),
-
-    pub fn needsLayout(self: *LayoutEngine) bool {
-        return self.dirty_views.count() > 0;
-    }
-
-    pub fn markDirty(self: *LayoutEngine, view: *View) void {
-        self.dirty_views.put(view.id, {}) catch {};
-    }
-
-    pub fn calculateLayout(self: *LayoutEngine, root_view: *View) void {
-        // Calculate layout for the entire view hierarchy
-        self.calculateViewLayout(root_view, root_view.rect.size);
-        self.dirty_views.clearRetainingCapacity();
-    }
-};
-
-pub const LayoutParams = struct {
-    width: LengthConstraint = .auto,
-    height: LengthConstraint = .auto,
-    min_width: ?f32 = null,
-    min_height: ?f32 = null,
-    max_width: ?f32 = null,
-    max_height: ?f32 = null,
-
-    flex_grow: f32 = 0.0,
-    flex_shrink: f32 = 1.0,
-    flex_basis: LengthConstraint = .auto,
-
-    align_self: Alignment = .auto,
-
-    margin: EdgeInsets = EdgeInsets.zero(),
-    padding: EdgeInsets = EdgeInsets.zero(),
-
-    position_type: PositionType = .relative,
-    position: EdgeInsets = EdgeInsets.zero(),
-};
-```
-
-### Layout Extension Points
-
-While Flexbox is the primary layout mechanism, the architecture is designed to support alternative layout approaches through a plugin system:
-
-```zig
-pub const LayoutEngineExtension = struct {
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        measureComponent: *const fn(*LayoutEngineExtension, *View, Size) Size,
-        arrangeChildren: *const fn(*LayoutEngineExtension, *View, Rect) void,
-        supportedLayoutType: *const fn(*LayoutEngineExtension) LayoutType,
-    };
-};
-```
-
-This allows future support for alternative layout systems, such as:
-
-- Grid-based layouts
-- Constraint-based layouts
-- UE5-inspired layout slots
-- Custom layout algorithms for specific components
-
-The layout engine emphasizes:
-
-- Incremental layout calculations
-- Cache-friendly operations
-- Minimal recalculations
-- Support for complex layouts
-- Consistent behavior across platforms
-
-## State Management
-
-State management uses a hybrid approach supporting both global and component-local state:
-
-```zig
-pub const StateStore = struct {
-    allocator: std.mem.Allocator,
-
-    global_store: std.StringHashMap(StateValue),
-    local_stores: std.AutoHashMap(u64, *ComponentState),
-    observers: std.StringHashMap(std.ArrayList(*StateObserver)),
-
-    pub fn createState(self: *StateStore, comptime T: type, key: []const u8, initial_value: T) !StateHandle(T) {
-        // Create type-safe state handle
-    }
-
-    pub fn get(self: *StateStore, comptime T: type, key: []const u8) ?T {
-        // Type-safe state retrieval
-    }
-
-    pub fn set(self: *StateStore, key: []const u8, value: anytype) !void {
-        // Type-safe state update with notifications
-    }
-};
-
-pub fn StateHandle(comptime T: type) type {
-    return struct {
-        store: *StateStore,
-        key: []const u8,
-
-        pub fn get(self: *const @This()) ?T {
-            return self.store.get(T, self.key);
-        }
-
-        pub fn set(self: *@This(), value: T) !void {
-            try self.store.set(self.key, value);
-        }
-
-        pub fn observe(self: *@This(), callback: fn(*anyopaque, T) void, context: *anyopaque) !void {
-            // Type-safe observation
-        }
-    };
-}
-```
-
-Component-level state management takes inspiration from React hooks:
-
-```zig
-pub const ComponentState = struct {
-    allocator: std.mem.Allocator,
-    component_id: u64,
-    states: std.ArrayList(anyopaque),
-
-    pub fn useState(self: *ComponentState, comptime T: type, initial_value: T) !*T {
-        // Create or retrieve component-local state
-    }
-
-    pub fn useEffect(self: *ComponentState, deps: anytype, callback: fn() ?fn() void) !void {
-        // Effect hooks for side effects
-    }
-};
-```
-
-This approach provides type safety, efficient updates, and clear data flow.
-
-## Event System
-
-The event system handles input processing and UI event propagation:
-
-```zig
-pub const EventManager = struct {
-    allocator: std.mem.Allocator,
-
-    input_events: std.ArrayList(InputEvent),
-    ui_events: std.ArrayList(UIEvent),
-
-    listeners: std.AutoHashMap(EventType, std.ArrayList(*EventListener)),
-
-    focused_view: ?*View = null,
-    hovered_view: ?*View = null,
-
-    pub fn processEvents(self: *EventManager) void {
-        // Process raw input events
-        for (self.input_events.items) |event| {
-            self.processInputEvent(event);
-        }
-        self.input_events.clearRetainingCapacity();
-
-        // Dispatch UI events
-        for (self.ui_events.items) |event| {
-            self.dispatchUIEvent(event);
-        }
-        self.ui_events.clearRetainingCapacity();
-    }
-};
-```
-
-The event flow follows a capture-bubble model:
-
-1. Event capture phase (top-down)
-2. Target phase at specific component
-3. Bubble phase (bottom-up)
-4. Global event dispatching
-
-## Animation System (Optional)
-
-The animation system provides efficient property animations as an optional module:
-
-```zig
-pub const AnimationSystem = struct {
-    allocator: std.mem.Allocator,
-
-    running_animations: std.ArrayList(*Animation),
-    animation_pool: std.ArrayList(*Animation),
-
-    pub fn animate(self: *AnimationSystem, target: *anyopaque, property: []const u8, end_value: anytype, duration_ms: u32) !*Animation {
-        // Create and start animation
-    }
-
-    pub fn update(self: *AnimationSystem, dt: f32) void {
-        // Update all active animations
-        var i: usize = 0;
-        while (i < self.running_animations.items.len) {
-            const animation = self.running_animations.items[i];
-
-            animation.advance(dt);
-
-            if (animation.isComplete()) {
-                // Return to pool and remove from active list
-                _ = self.running_animations.orderedRemove(i);
-                try self.animation_pool.append(animation);
-            } else {
-                i += 1;
-            }
-        }
-    }
-};
-
-pub const Animation = struct {
-    property: []const u8,
-    target: *anyopaque,
-    start_value: ValueUnion,
-    end_value: ValueUnion,
-    value_type: ValueType,
-    duration: f32,
-    current_time: f32 = 0,
-    easing_function: fn(f32) f32 = linearEasing,
-    on_complete: ?fn(*Animation) void = null,
-
-    pub fn advance(self: *Animation, dt: f32) void {
-        // Update animation progress and apply value
-    }
-};
-```
-
-The animation system features:
-
-- Object pooling for zero-allocation animations
-- Configurable easing functions
-- Property type safety
-- Completion callbacks
-- Animation sequences and staggered animations
-
-Applications that don't need animations can omit this system entirely, reducing memory and processing overhead.
-
-## Styling and Theming
-
-The styling system provides consistent visual theming:
-
-```zig
-pub const StyleSystem = struct {
-    allocator: std.mem.Allocator,
-
-    themes: std.StringHashMap(*Theme),
-    active_theme: *Theme,
-
-    style_cache: std.AutoHashMap(u64, *Style),
-
-    pub fn getStyleForComponent(self: *StyleSystem, component_type: []const u8, state: ?[]const u8, custom_style: ?*Style) !*Style {
-        // Compute and cache component style
-    }
-};
-
-pub const Theme = struct {
-    colors: ColorPalette,
-    typography: Typography,
-    metrics: Metrics,
-    component_styles: std.StringHashMap(*ComponentStyle),
-    platform_adaptations: PlatformAdaptations,
-    color_scheme: ColorScheme = .light,
-};
-
-pub const PlatformAdaptations = struct {
-    button_radius: f32,
-    control_radius: f32,
-    animation_speed_factor: f32,
-    font_size_multiplier: f32,
-    density_scale: f32,
-    touch_target_min_size: Size,
-    scroll_friction: f32,
-    scroll_spring_stiffness: f32,
-};
-```
-
-The styling approach maintains consistent branding while respecting platform conventions. The system supports light/dark mode switching and theme customization.
-
-## Asset Management and Resource Loading
-
-The asset management system handles resource loading with support for asynchronous operations:
-
-```zig
-pub const AssetManager = struct {
-    allocator: std.mem.Allocator,
-
-    loaded_assets: std.StringHashMap(*Asset),
-    loading_requests: std.ArrayList(LoadingRequest),
-
-    pub fn loadAsset(self: *AssetManager, path: []const u8, asset_type: AssetType) !AssetHandle {
-        // Check if already loaded
-        if (self.loaded_assets.get(path)) |asset| {
-            return AssetHandle{
-                .manager = self,
-                .path = try self.allocator.dupe(u8, path),
-                .state = .loaded,
-                .asset = asset,
-            };
-        }
-
-        // Create loading request
-        const handle = AssetHandle{
-            .manager = self,
-            .path = try self.allocator.dupe(u8, path),
-            .state = .loading,
-            .asset = null,
-        };
-
-        try self.loading_requests.append(.{
-            .path = handle.path,
-            .asset_type = asset_type,
-            .callback = null,
-        });
-
-        return handle;
-    }
-
-    pub fn processLoadingRequests(self: *AssetManager) !void {
-        // Process queued asset loading requests
-        // This can be called from application's main loop or a dedicated thread
-    }
-};
-
-pub const AssetHandle = struct {
-    manager: *AssetManager,
-    path: []const u8,
-    state: AssetState,
-    asset: ?*Asset,
-
-    pub fn isLoaded(self: *const AssetHandle) bool {
-        return self.state == .loaded and self.asset != null;
-    }
-
-    pub fn getData(self: *const AssetHandle, comptime T: type) ?*T {
-        if (!self.isLoaded()) return null;
-        return @ptrCast(*T, @alignCast(@alignOf(T), self.asset.?.data));
-    }
-
-    pub fn addLoadCallback(self: *AssetHandle, callback: fn(*AssetHandle) void) !void {
-        // Add callback for when loading completes
-    }
-};
-```
-
-Key aspects of the asset management system:
-
-- Support for asynchronous loading without imposing a threading model
-- Clear loading states and fallback mechanisms
-- Type-safe access to asset data
-- Resource reference counting
-- Optional callbacks for load completion
-
-This approach allows applications to implement their own loading strategies while providing a consistent interface for asset access.
-
-## Platform Integration
-
-The library uses a platform abstraction layer to handle platform-specific functionality:
-
-```zig
-pub const Platform = struct {
-    vtable: *const VTable,
-
-    pub const VTable = struct {
-        // Window/display management
-        createWindow: *const fn(title: []const u8, width: u32, height: u32) !*Window,
-        getCurrentScreenSize: *const fn() Size,
-
-        // Input handling
-        pollEvents: *const fn(*EventManager) void,
-        getPointerLocation: *const fn() Point,
-
-        // Rendering
-        createRenderer: *const fn(window: *Window) !*GraphicsAPI,
-        swapBuffers: *const fn(window: *Window) void,
-
-        // File system
-        loadAsset: *const fn(path: []const u8, out_data: *[]u8) !void,
-
-        // Clipboard
-        setClipboardText: *const fn(text: []const u8) !void,
-        getClipboardText: *const fn(allocator: std.mem.Allocator) ![]u8,
-    };
-};
-```
-
-This abstraction enables the library to run on various platforms while handling platform-specific behaviors appropriately.
-
-### Threading Model Considerations
-
-The library is explicitly thread-model agnostic. It doesn't impose any specific threading requirements, allowing it to be used in various environments:
-
-- Single-threaded applications
-- Game engines with their own threading models
-- Desktop applications with UI thread requirements
-- Embedded systems with or without threading support
-
-Applications are responsible for ensuring proper synchronization if they access the UI from multiple threads. The library's interfaces are designed to facilitate integration with different threading approaches without assuming any particular model.
-
-## Accessibility (Optional)
-
-The library includes optional accessibility support through a dedicated system:
-
-```zig
-pub const Accessibility = struct {
-    allocator: std.mem.Allocator,
-
-    accessibility_tree: *AccessibilityNode,
-    platform_api: *PlatformAccessibility,
-
-    pub fn updateFromView(self: *Accessibility, view: *View) !void {
-        // Build accessibility tree from view hierarchy
-    }
-};
-
-pub const AccessibilityNode = struct {
-    role: AccessibilityRole,
-    label: ?[]const u8 = null,
-    hint: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-    enabled: bool = true,
-    focused: bool = false,
-    children: std.ArrayList(*AccessibilityNode),
-    action_handlers: std.AutoHashMap(AccessibilityAction, fn(*AccessibilityNode) void),
-    view_id: u64,
-};
-```
-
-The accessibility system includes support for screen readers, keyboard navigation, focus management, and respects system accessibility settings. This system can be enabled or disabled based on application requirements.
-
-## Design Philosophy
-
-The library adheres to these core principles:
-
-1. **Data-Oriented Design**: Optimizing memory layout and cache efficiency rather than focusing on object hierarchies.
-
-2. **Performance First**: Making design decisions that prioritize runtime performance, with careful attention to allocations, cache usage, and CPU efficiency.
-
-3. **Explicit Over Implicit**: Favoring explicit control and clearly visible data flow over magic or hidden behaviors.
-
-4. **Composition Over Inheritance**: Building components via composition for better flexibility and code reuse.
-
-5. **Cross-Platform Consistency**: Maintaining a consistent API and behavior across platforms while respecting platform-specific conventions.
-
-6. **Memory Consciousness**: Designing for environments with limited memory, including embedded systems.
-
-7. **Minimal Dependencies**: Keeping external dependencies to a minimum for better portability and compilation speed.
-
-8. **Clear Responsibility Boundaries**: Following Zig's philosophy of communicating intent precisely by making it clear what the library is and isn't responsible for.
-
-9. **Optional Complexity**: Core systems are mandatory, while complex systems (animations, accessibility) are optional to support constrained environments.
-
-These principles guide all architectural decisions and implementation details throughout the library.
-
-## Integration Example
-
-Here's a simple example showing how to initialize and use the library:
-
-```zig
+// Simplified example
 const std = @import("std");
 const gui = @import("gui");
 
@@ -654,98 +93,640 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create a renderer (using Skia in this example)
-    var renderer = try gui.renderer.createSkiaRenderer(allocator);
-    defer renderer.deinit();
-
-    // Initialize the GUI with minimal configuration
-    var ui = try gui.GUI.init(allocator, &renderer.renderer_interface, .{
-        .window_width = 800,
-        .window_height = 600,
-        .window_title = "Example Application",
-        .enable_animations = true,  // Optional feature
+    // Initialize Clay with our SDL renderer
+    var clay_ctx = try gui.clay.init(allocator, .{
+        .width = 800,
+        .height = 600,
+        .title = "Zig-GUI App",
     });
-    defer ui.deinit();
+    defer clay_ctx.deinit();
 
-    // Create a state for our counter
-    const counter_state = try ui.state_store.createState(i32, "counter", 0);
-    defer counter_state.deinit();
+    // Create application state
+    var app_state = try gui.state.Store.init(allocator);
+    defer app_state.deinit();
 
-    // Create root container
-    const container = try gui.Container.create(allocator);
-    container.setStyle(.{
-        .padding = gui.EdgeInsets{ .all = 20 },
-        .background_color = gui.Color.fromRgba(240, 240, 240, 255),
-    });
-    ui.setRootView(&container.view);
-
-    // Add counter display
-    const counter_text = try gui.Text.create(allocator, "0");
-    counter_text.setStyle(.{
-        .font_size = 48,
-        .margin = gui.EdgeInsets{ .bottom = 20 },
-    });
-    try container.addChild(&counter_text.view);
-
-    // Bind counter state to text
-    try gui.bind(&counter_text.view, "content", counter_state, intToString);
-
-    // Add increment button
-    const button = try gui.Button.create(allocator, "Increment");
-    button.setOnClick(struct {
-        fn onClick(_: *gui.Button) void {
-            const current = counter_state.get() orelse 0;
-            counter_state.set(current + 1) catch {};
-        }
-    }.onClick);
-    try container.addChild(&button.view);
+    // Create state variables
+    const counter = try app_state.create(i32, "counter", 0);
 
     // Main loop
-    var running = true;
-    var last_time = std.time.milliTimestamp();
+    while (!clay_ctx.shouldClose()) {
+        // Begin frame
+        try clay_ctx.beginFrame();
 
-    while (running) {
-        // Calculate delta time
-        const current_time = std.time.milliTimestamp();
-        const dt = @intToFloat(f32, current_time - last_time) / 1000.0;
-        last_time = current_time;
+        // Render UI with Clay's immediate-mode API
+        gui.clay.container(.{
+            .id = "main_container",
+            .padding = gui.clay.EdgeInsets.all(20),
+        }, {
+            // Text showing counter value
+            gui.clay.text(.{
+                .content = try std.fmt.allocPrint(
+                    allocator,
+                    "Count: {d}",
+                    .{counter.get()}
+                ),
+            });
 
-        // Update GUI
-        ui.frame(dt);
+            // Button that increments counter
+            if (gui.clay.button(.{ .label = "Increment" })) {
+                try counter.update(counter.get() + 1);
+            }
+        });
 
-        // Check for exit condition
-        running = !ui.shouldExit();
+        // End frame
+        try clay_ctx.endFrame();
     }
-}
-
-fn intToString(value: i32) []const u8 {
-    // Convert int to string (simplified for example)
-    return switch(value) {
-        0 => "0",
-        1 => "1",
-        2 => "2",
-        // etc.
-        else => "many",
-    };
 }
 ```
 
-## Performance Considerations
+This approach leverages Clay's strengths in layout and rendering while adding Zig-GUI's state management and other capabilities.
 
-The library prioritizes performance through several key techniques:
+## State Management System
 
-1. **Batch Rendering**: Minimizing draw calls by combining similar UI elements.
+The state management system is designed to work seamlessly with Clay's immediate-mode approach while providing reactive capabilities in a Zig-idiomatic way.
 
-2. **Geometry Caching**: Only regenerating geometry when elements change.
+```zig
+pub const state = struct {
+    // Main store that contains application state
+    pub const Store = struct {
+        allocator: std.mem.Allocator,
+        values: std.StringHashMap(Value),
+        observers: std.StringHashMap(std.ArrayList(Observer)),
 
-3. **Dirty Flagging**: Tracking which components need updating to avoid redundant work.
+        pub fn init(allocator: std.mem.Allocator) !Store {
+            return Store{
+                .allocator = allocator,
+                .values = std.StringHashMap(Value).init(allocator),
+                .observers = std.StringHashMap(std.ArrayList(Observer)).init(allocator),
+            };
+        }
 
-4. **Memory Pooling**: Using object pools to reduce allocation overhead.
+        pub fn deinit(self: *Store) void {
+            // Clean up all resources
+            var iter = self.values.iterator();
+            while (iter.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+            }
+            self.values.deinit();
 
-5. **Data-Oriented Layout**: Organizing data for optimal cache usage.
+            var obs_iter = self.observers.iterator();
+            while (obs_iter.next()) |entry| {
+                entry.value_ptr.deinit();
+            }
+            self.observers.deinit();
+        }
 
-6. **Incremental Layout**: Only recalculating layout for changed elements.
+        // Create a typed state value
+        pub fn create(self: *Store, comptime T: type, key: []const u8, initial: T) !*State(T) {
+            // Create typed state and store in internal map
+            const value = try Value.create(self.allocator, T, initial);
+            try self.values.put(try self.allocator.dupe(u8, key), value);
 
-7. **Minimal Allocation**: Carefully managing memory allocations, especially in hot paths.
+            return State(T){
+                .store = self,
+                .key = try self.allocator.dupe(u8, key),
+            };
+        }
 
-The emphasis on performance makes the library suitable for both high-end desktop applications and resource-constrained embedded systems.
+        // Internal implementation details...
+    };
+
+    // Type-safe state handle
+    pub fn State(comptime T: type) type {
+        return struct {
+            store: *Store,
+            key: []const u8,
+
+            pub fn get(self: @This()) T {
+                const value = self.store.values.get(self.key).?;
+                return value.get(T);
+            }
+
+            pub fn update(self: @This(), new_value: T) !void {
+                try self.store.updateValue(self.key, new_value);
+            }
+
+            pub fn observe(self: @This(), callback: *const fn(T) void) !ObserverHandle {
+                return try self.store.addObserver(self.key, T, callback);
+            }
+        };
+    }
+
+    // Derived state that depends on other state values
+    pub fn derived(store: *Store, comptime T: type, comptime deps: []const []const u8, compute_fn: anytype) !*State(T) {
+        // Implementation would set up dependency tracking and auto-recalculation
+    }
+
+    // Transaction for batching multiple updates
+    pub const Transaction = struct {
+        store: *Store,
+        changes: std.ArrayList(Change),
+
+        pub fn begin(store: *Store) !Transaction {
+            return Transaction{
+                .store = store,
+                .changes = std.ArrayList(Change).init(store.allocator),
+            };
+        }
+
+        pub fn update(self: *Transaction, comptime T: type, key: []const u8, value: T) !void {
+            try self.changes.append(Change{
+                .key = key,
+                .value = try Value.create(self.store.allocator, T, value),
+            });
+        }
+
+        pub fn commit(self: *Transaction) !void {
+            // Atomically apply all changes and notify observers once
+            // Implementation details...
+        }
+
+        pub fn deinit(self: *Transaction) void {
+            self.changes.deinit();
+        }
+    };
+};
+```
+
+Key features of the state management system:
+
+1. **Type Safety**: Fully type-checked state operations
+2. **Efficient Updates**: Only re-renders components when state actually changes
+3. **Explicit Dependencies**: Clear declaration of state dependencies
+4. **Batched Updates**: Transaction system for atomic state changes
+5. **Minimal Overhead**: Direct state access in the immediate-mode rendering cycle
+
+This approach fits Clay's immediate-mode paradigm because state values are directly accessed during rendering, but adds reactivity through the observer pattern.
+
+### State Management Usage Examples
+
+#### Basic State Creation and Usage
+
+```zig
+// Initialize state store
+var state_store = try gui.state.Store.init(allocator);
+defer state_store.deinit();
+
+// Create different types of state
+const counter = try state_store.create(i32, "counter", 0);
+const username = try state_store.create([]const u8, "username", "Guest");
+const settings = try state_store.create(AppSettings, "settings", .{
+    .theme = .dark,
+    .font_size = 16,
+    .volume = 0.8,
+});
+
+// Read state values
+const current_count = counter.get();
+std.debug.print("Count: {d}\n", .{current_count});
+
+// Update state values
+try counter.update(current_count + 1);
+try username.update("JohnDoe");
+try settings.update(.{
+    .theme = .light,
+    .font_size = 18,
+    .volume = 0.7,
+});
+```
+
+#### Observing State Changes
+
+```zig
+// Create a state value
+const volume = try state_store.create(f32, "volume", 0.5);
+
+// Create an observer that runs when the value changes
+const observer = try volume.observe(struct {
+    fn onVolumeChange(new_value: f32) void {
+        std.debug.print("Volume changed to: {d:.2}\n", .{new_value});
+
+        // Update audio system with new volume
+        audio_system.setVolume(new_value);
+    }
+}.onVolumeChange);
+
+// Updates will trigger the observer
+try volume.update(0.8); // Prints "Volume changed to: 0.80"
+```
+
+#### Using Derived State
+
+```zig
+// Create base state values
+const width = try state_store.create(f32, "width", 100.0);
+const height = try state_store.create(f32, "height", 50.0);
+
+// Create derived state that calculates area automatically
+const area = try gui.state.derived(
+    &state_store,
+    f32,
+    &[_][]const u8{ "width", "height" },
+    struct {
+        fn calculate(w: f32, h: f32) f32 {
+            return w * h;
+        }
+    }.calculate
+);
+
+// Area automatically updates when width or height changes
+std.debug.print("Initial area: {d:.2}\n", .{area.get()}); // 5000.00
+try width.update(200.0);
+std.debug.print("Updated area: {d:.2}\n", .{area.get()}); // 10000.00
+```
+
+#### Using Transactions for Batched Updates
+
+```zig
+// Create state values
+const position_x = try state_store.create(f32, "position_x", 0.0);
+const position_y = try state_store.create(f32, "position_y", 0.0);
+const is_moving = try state_store.create(bool, "is_moving", false);
+
+// Start a transaction for batched updates
+var transaction = try gui.state.Transaction.begin(&state_store);
+defer transaction.deinit();
+
+// Update multiple values atomically
+try transaction.update(f32, "position_x", 100.0);
+try transaction.update(f32, "position_y", 50.0);
+try transaction.update(bool, "is_moving", true);
+
+// Commit all changes at once - observers only notified once
+try transaction.commit();
+```
+
+#### Integration with Clay UI
+
+```zig
+// Handle UI events with state updates
+gui.clay.container(.{ .id = "controls" }, {
+    // Display current state
+    gui.clay.text(.{
+        .content = try std.fmt.allocPrint(
+            allocator,
+            "Volume: {d:.0}%",
+            .{volume.get() * 100}
+        ),
+    });
+
+    // Create slider that updates state
+    if (gui.clay.slider(.{
+        .id = "volume_slider",
+        .min = 0.0,
+        .max = 1.0,
+        .value = volume.get(),
+    })) |new_value| {
+        // Update state when slider changes
+        try volume.update(new_value);
+    }
+
+    // Button that mutes by setting volume to 0
+    if (gui.clay.button(.{ .label = "Mute" })) {
+        try volume.update(0.0);
+    }
+});
+```
+
+#### Complex Component with State Integration
+
+```zig
+// Define a reusable component that integrates with state
+fn audioPlayer(allocator: std.mem.Allocator, track_state: *gui.state.State(Track)) !void {
+    const track = track_state.get();
+
+    // Container with player controls
+    gui.clay.container(.{
+        .id = CLAY_ID("audio_player"),
+        .padding = CLAY_PADDING_ALL(16),
+        .backgroundColor = { 30, 30, 40, 255 },
+        .cornerRadius = CLAY_CORNER_RADIUS(8),
+    }) {
+        // Track information
+        CLAY_TEXT(track.title, CLAY_TEXT_CONFIG({
+            .fontSize = 24,
+            .textColor = { 255, 255, 255, 255 },
+        }));
+
+        CLAY_TEXT(track.artist, CLAY_TEXT_CONFIG({
+            .fontSize = 16,
+            .textColor = { 200, 200, 200, 255 },
+        }));
+
+        // Progress bar
+        gui.clay.progressBar(.{
+            .id = CLAY_ID("track_progress"),
+            .progress = track.current_position / track.duration,
+            .height = 8,
+        });
+
+        // Transport controls in a row
+        gui.clay.container(.{
+            .id = CLAY_ID("transport_controls"),
+            .layout = {
+                .direction = .horizontal,
+                .alignment = { .x = .center, .y = .center },
+                .childGap = 16,
+            },
+        }) {
+            // Previous button
+            if (gui.clay.iconButton(.{
+                .id = CLAY_ID("prev_button"),
+                .icon = "prev",
+            })) {
+                try audio_system.previousTrack();
+                // State will be updated by the audio system
+            }
+
+            // Play/Pause button
+            if (gui.clay.iconButton(.{
+                .id = CLAY_ID("play_button"),
+                .icon = track.is_playing ? "pause" : "play",
+            })) {
+                var updated_track = track;
+                updated_track.is_playing = !track.is_playing;
+                try track_state.update(updated_track);
+
+                if (updated_track.is_playing) {
+                    try audio_system.play();
+                } else {
+                    try audio_system.pause();
+                }
+            }
+
+            // Next button
+            if (gui.clay.iconButton(.{
+                .id = CLAY_ID("next_button"),
+                .icon = "next",
+            })) {
+                try audio_system.nextTrack();
+                // State will be updated by the audio system
+            }
+        }
+    }
+}
+```
+
+## Asset Management
+
+The asset management system provides type-safe resource handling:
+
+```zig
+pub const assets = struct {
+    pub const Manager = struct {
+        allocator: std.mem.Allocator,
+        resources: std.StringHashMap(Resource),
+        clay_ctx: *clay.Context,
+
+        pub fn init(allocator: std.mem.Allocator, clay_ctx: *clay.Context) Manager {
+            return .{
+                .allocator = allocator,
+                .resources = std.StringHashMap(Resource).init(allocator),
+                .clay_ctx = clay_ctx,
+            };
+        }
+
+        pub fn loadFont(self: *Manager, path: []const u8) !Font {
+            // Load font and register with Clay
+        }
+
+        pub fn loadImage(self: *Manager, path: []const u8) !Image {
+            // Load image and register with Clay
+        }
+
+        pub fn loadJson(self: *Manager, path: []const u8) !JsonResource {
+            // Load and parse JSON data
+        }
+
+        // Additional resource loading methods...
+
+        pub fn deinit(self: *Manager) void {
+            // Clean up all resources
+            var iter = self.resources.valueIterator();
+            while (iter.next()) |resource| {
+                resource.deinit(self.allocator);
+            }
+            self.resources.deinit();
+        }
+    };
+
+    pub const Font = struct {
+        // Font handle that integrates with Clay
+    };
+
+    pub const Image = struct {
+        // Image handle that integrates with Clay
+    };
+
+    // Other resource types...
+};
+```
+
+The asset system works directly with Clay's resource handling mechanisms, providing a more type-safe interface.
+
+## Specialized Component Libraries
+
+Building on Clay's core layout and rendering capabilities, Zig-GUI provides domain-specific components:
+
+```zig
+// Audio visualization and control components
+pub const audio = struct {
+    pub fn waveform(allocator: std.mem.Allocator, samples: []const f32, options: WaveformOptions) !void {
+        // Render audio waveform using Clay primitives
+    }
+
+    pub fn spectrum(allocator: std.mem.Allocator, frequencies: []const f32, options: SpectrumOptions) !void {
+        // Render frequency spectrum using Clay primitives
+    }
+
+    pub fn transport(allocator: std.mem.Allocator, state: *TransportState, options: TransportOptions) !void {
+        // Render transport controls (play, stop, etc.)
+    }
+
+    // Additional audio-specific components...
+};
+
+// Data visualization components
+pub const data = struct {
+    pub fn table(allocator: std.mem.Allocator, data: anytype, options: TableOptions) !void {
+        // Render data table using Clay primitives
+    }
+
+    pub fn chart(allocator: std.mem.Allocator, data: anytype, options: ChartOptions) !void {
+        // Render various chart types
+    }
+
+    // Additional data components...
+};
+```
+
+These specialized components build on Clay's capabilities while adding domain-specific knowledge and optimizations.
+
+## Platform Integration
+
+Zig-GUI provides platform-specific integration modules:
+
+```zig
+pub const platform = struct {
+    pub const sdl = struct {
+        pub fn init(allocator: std.mem.Allocator) !SdlContext {
+            // Initialize SDL and create Clay context
+        }
+    };
+
+    pub const glfw = struct {
+        pub fn init(allocator: std.mem.Allocator) !GlfwContext {
+            // Initialize GLFW and create Clay context
+        }
+    };
+
+    pub const teensy = struct {
+        pub fn init(allocator: std.mem.Allocator, display: *Display) !TeensyContext {
+            // Initialize Teensy display and create Clay context
+        }
+    };
+
+    // Additional platforms...
+};
+```
+
+Each platform module initializes Clay with the appropriate renderer and event handlers.
+
+## Performance Optimization
+
+Performance is a top priority for Zig-GUI. Key optimization strategies include:
+
+1. **Zero Allocation Rendering**: Working with Clay's immediate-mode approach to minimize allocations
+2. **Memory Pooling**: Using object pools for frequently created/destroyed components
+3. **Incremental Updates**: Only recalculating layout and state when necessary
+4. **Data-Oriented Design**: Organizing data for optimal cache usage
+5. **Specialized Renderers**: Platform-specific optimizations for rendering
+6. **Profiling Tools**: Built-in performance measurement utilities
+
+```zig
+pub const perf = struct {
+    pub const Profiler = struct {
+        allocator: std.mem.Allocator,
+        samples: std.ArrayList(Sample),
+        active_markers: std.StringHashMap(u64),
+
+        pub fn init(allocator: std.mem.Allocator) Profiler {
+            // Initialize profiler
+        }
+
+        pub fn beginMark(self: *Profiler, name: []const u8) void {
+            // Mark beginning of operation for timing
+        }
+
+        pub fn endMark(self: *Profiler, name: []const u8) void {
+            // Mark end of operation and record duration
+        }
+
+        pub fn report(self: *Profiler) !void {
+            // Generate performance report
+        }
+    };
+};
+```
+
+The performance tools help identify and address bottlenecks in real applications.
+
+## Design Philosophy
+
+Zig-GUI adheres to these core principles:
+
+1. **Clay for Layout and Rendering**: Leverage Clay's strengths instead of reinventing them
+2. **Zig-Idiomatic APIs**: Provide interfaces that feel natural to Zig developers
+3. **Data-Oriented Design**: Optimize for performance and memory efficiency
+4. **Explicit over Implicit**: Favor clear, explicit control flow and data management
+5. **Composition over Inheritance**: Build complex systems through composition
+6. **Performance First**: Prioritize runtime performance in all design decisions
+7. **Cross-Platform Consistency**: Maintain consistent behavior across platforms
+8. **Memory Consciousness**: Design for constrained environments
+9. **Minimal Dependencies**: Limit external dependencies for better portability
+10. **Clear Responsibility Boundaries**: Define explicit integration points with Clay
+
+By adhering to these principles, Zig-GUI provides a powerful complement to Clay that extends its capabilities while maintaining its performance characteristics.
+
+## Example: Music Tracker Application
+
+Here's how Zig-GUI might be used for a music tracker application on a Teensy 4.1:
+
+```zig
+const std = @import("std");
+const gui = @import("gui");
+
+pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Initialize Clay with Teensy display
+    var display = try initTeensyDisplay();
+    var context = try gui.platform.teensy.init(allocator, &display);
+    defer context.deinit();
+
+    // Initialize application state
+    var app_state = try gui.state.Store.init(allocator);
+    defer app_state.deinit();
+
+    // Create tracker-specific state
+    const pattern = try app_state.create(tracker.Pattern, "current_pattern", tracker.Pattern.empty());
+    const transport = try app_state.create(tracker.TransportState, "transport", .{});
+
+    // Load assets
+    var assets = try gui.assets.Manager.init(allocator, &context);
+    const font = try assets.loadFont(@embedFile("assets/font.ttf"));
+
+    // Main loop
+    while (true) {
+        // Process hardware inputs
+        try processTeensyInputs(&context, &app_state);
+
+        // Begin frame
+        try context.beginFrame();
+
+        // Main UI layout
+        gui.clay.container(.{
+            .id = "main_layout",
+            .layout = .{
+                .direction = .vertical,
+                .padding = gui.clay.EdgeInsets.all(4),
+            },
+        }, {
+            // Transport controls
+            gui.audio.transport(allocator, transport, .{
+                .font = font,
+                .show_tempo = true,
+            });
+
+            // Pattern editor
+            tracker.patternEditor(allocator, pattern, .{
+                .rows_visible = 16,
+                .font = font,
+            });
+
+            // Mixer view
+            tracker.mixerView(allocator, .{
+                .font = font,
+            });
+        });
+
+        // End frame
+        try context.endFrame();
+
+        // Update audio engine
+        try updateAudio(transport.get(), pattern.get());
+    }
+}
+```
+
+This example demonstrates how Zig-GUI complements Clay to create a specialized, high-performance application for embedded hardware.
+
+## Conclusion
+
+Zig-GUI is not a replacement for Clay.h but rather a set of libraries that enhance and extend its capabilities. By focusing on state management, asset handling, and specialized components, Zig-GUI provides a complete solution for building high-performance UIs across platforms, from embedded devices to desktop applications.
+
+The combination of Clay's immediate-mode rendering and layout with Zig-GUI's type-safe, performance-oriented extensions
+creates a powerful toolkit for developers who need precise control over their UI systems while maintaining excellent
+performance characteristics.
