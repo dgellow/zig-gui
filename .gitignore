@@ -1,3 +1,6 @@
 .zig-cache
 zig-out
 .vscode
+*.o
+
+**/.claude/settings.local.json
