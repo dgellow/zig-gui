@@ -14,6 +14,24 @@ const CounterState = struct {
     clicks: u32 = 0,
 };
 
+/// Find an element by its text content - demonstrates real hit testing
+fn findElementByText(ctx: *zlay.Context, target_text: []const u8) ?u32 {
+    // Search through all elements in the layout engine
+    for (0..ctx.layout.element_count) |i| {
+        const index = @as(u32, @intCast(i));
+        const element_type = ctx.layout.element_types[index];
+        
+        // Only check button and text elements
+        if (element_type == .button or element_type == .text) {
+            const text_style = ctx.layout.text_styles[index];
+            if (std.mem.eql(u8, text_style.text, target_text)) {
+                return index;
+            }
+        }
+    }
+    return null;
+}
+
 /// The magical immediate-mode UI function
 /// Notice how simple and declarative this is!
 fn counterUI(ctx: *zlay.Context, state: *CounterState) !void {
@@ -77,11 +95,25 @@ pub fn main() !void {
         // Build the UI tree using our immediate-mode API
         try counterUI(ctx, &state);
         
-        // Simulate some user interactions
+        // Get layout results and perform REAL hit testing
         if (frame == 3) {
-            // Simulate mouse click on increment button
-            ctx.updateMousePos(zlay.Point{ .x = 400, .y = 100 });
-            ctx.handleMouseDown(.left);
+            // Find the actual position of the increment button after layout computation
+            const increment_button_index = findElementByText(ctx, "Click me! (+1)");
+            if (increment_button_index) |index| {
+                const button_rect = ctx.layout.getElementRect(index);
+                const click_pos = zlay.Point{ 
+                    .x = button_rect.x + button_rect.width * 0.5,  // Center X
+                    .y = button_rect.y + button_rect.height * 0.5  // Center Y
+                };
+                
+                std.debug.print("🎯 Real button click at ({d:.1}, {d:.1}) on button at rect({d:.1}, {d:.1}, {d:.1}x{d:.1})\n", 
+                    .{ click_pos.x, click_pos.y, button_rect.x, button_rect.y, button_rect.width, button_rect.height });
+                
+                ctx.updateMousePos(click_pos);
+                ctx.handleMouseDown(.left);
+            } else {
+                std.debug.print("❌ Could not find increment button for real click!\n", .{});
+            }
         }
         
         if (frame == 4) {
@@ -89,10 +121,31 @@ pub fn main() !void {
             ctx.handleMouseUp(.left);
         }
         
-        if (frame == 7) {
-            // Another click
-            ctx.updateMousePos(zlay.Point{ .x = 400, .y = 100 });
+        if (frame == 6) {
+            // Test hit testing accuracy - click OUTSIDE the button (should NOT trigger)
+            const miss_pos = zlay.Point{ .x = 50.0, .y = 50.0 }; // Top-left corner (outside button)
+            std.debug.print("❌ Testing miss-click at ({d:.1}, {d:.1}) - should NOT trigger button\n", .{ miss_pos.x, miss_pos.y });
+            ctx.updateMousePos(miss_pos);
             ctx.handleMouseDown(.left);
+        }
+        
+        if (frame == 7) {
+            ctx.handleMouseUp(.left); // End the miss-click
+            
+            // Now do real click on the button
+            const increment_button_index = findElementByText(ctx, "Click me! (+1)");
+            if (increment_button_index) |index| {
+                const button_rect = ctx.layout.getElementRect(index);
+                const click_pos = zlay.Point{ 
+                    .x = button_rect.x + button_rect.width * 0.5,
+                    .y = button_rect.y + button_rect.height * 0.5
+                };
+                
+                std.debug.print("🎯 Second real button click at ({d:.1}, {d:.1})\n", .{ click_pos.x, click_pos.y });
+                
+                ctx.updateMousePos(click_pos);
+                ctx.handleMouseDown(.left);
+            }
         }
         
         if (frame == 8) {
