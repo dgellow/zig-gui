@@ -2,5 +2,9 @@
 zig-out
 .vscode
 *.o
+*.a
+*.so
+*.dll
+*.lib
 
 **/.claude/settings.local.json

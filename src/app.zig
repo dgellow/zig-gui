@@ -1,5 +1,6 @@
 const std = @import("std");
 const zlay = @import("../lib/zlay/src/zlay.zig");
+const SdlPlatform = @import("platforms/sdl.zig").SdlPlatform;
 
 /// Execution modes for the revolutionary hybrid architecture
 pub const ExecutionMode = enum {
@@ -89,8 +90,7 @@ pub const App = struct {
     
     // Core systems
     gui: *GUI,
-    event_queue: EventQueue,
-    platform: Platform,
+    platform: SdlPlatform,
     
     // State
     running: bool = true,
@@ -108,15 +108,14 @@ pub const App = struct {
         const gui = try GUI.init(allocator, config);
         errdefer gui.deinit();
         
-        // Initialize platform backend
-        const platform = try Platform.init(allocator, config);
+        // Initialize SDL platform backend
+        const platform = try SdlPlatform.init(allocator, config);
         errdefer platform.deinit();
         
         app.* = .{
             .allocator = allocator,
             .config = config,
             .gui = gui,
-            .event_queue = EventQueue.init(allocator),
             .platform = platform,
         };
         
@@ -127,13 +126,12 @@ pub const App = struct {
     pub fn deinit(self: *Self) void {
         self.platform.deinit();
         self.gui.deinit();
-        self.event_queue.deinit();
         self.allocator.destroy(self);
     }
     
     /// Check if the application should continue running
     pub fn isRunning(self: *const Self) bool {
-        return self.running;
+        return self.running and !self.platform.shouldQuit();
     }
     
     /// Request the application to quit gracefully
@@ -155,12 +153,12 @@ pub const App = struct {
     /// Event-driven execution: 0% idle CPU (blocks on events)
     /// This is the revolutionary part - true idle efficiency!
     fn runEventDriven(self: *Self, ui_function: UIFunction, user_state: ?*anyopaque) !void {
-        while (self.running) {
+        while (self.isRunning()) {
             const start_time = std.time.nanoTimestamp();
             
             // 🛌 This is where the magic happens - we SLEEP until events occur!
-            // Achieving true 0% idle CPU usage
-            const event = try self.event_queue.waitForEvent();
+            // Achieving true 0% idle CPU usage with SDL_WaitEvent()
+            const event = try self.platform.waitForEvent();
             
             // Process the event
             try self.processEvent(event);
@@ -181,11 +179,13 @@ pub const App = struct {
     fn runGameLoop(self: *Self, ui_function: UIFunction, user_state: ?*anyopaque) !void {
         const target_frame_time_ns = 1_000_000_000 / self.config.target_fps;
         
-        while (self.running) {
+        while (self.isRunning()) {
             const frame_start = std.time.nanoTimestamp();
             
             // Process all available events (non-blocking)
-            try self.processAllEvents();
+            while (self.platform.pollEvent()) |event| {
+                try self.processEvent(event);
+            }
             
             // Always render in game loop mode for smooth animations
             try self.renderFrame(ui_function, user_state);
@@ -206,9 +206,9 @@ pub const App = struct {
     /// Minimal execution: Ultra-low resource usage for embedded
     /// Every CPU cycle counts!
     fn runMinimal(self: *Self, ui_function: UIFunction, user_state: ?*anyopaque) !void {
-        while (self.running) {
+        while (self.isRunning()) {
             // In minimal mode, we only wake up when absolutely necessary
-            const event = try self.event_queue.waitForEvent();
+            const event = try self.platform.waitForEvent();
             
             if (event.type == .quit) {
                 self.running = false;
@@ -240,13 +240,7 @@ pub const App = struct {
         }
     }
     
-    /// Process all available events (non-blocking)
-    fn processAllEvents(self: *Self) !void {
-        while (self.event_queue.hasEvents()) {
-            const event = try self.event_queue.pollEvent();
-            try self.processEvent(event);
-        }
-    }
+    // processAllEvents replaced with inline polling in game loop
     
     /// Render a complete frame
     fn renderFrame(self: *Self, ui_function: UIFunction, user_state: ?*anyopaque) !void {
@@ -289,63 +283,9 @@ pub const PerformanceStats = struct {
     cpu_usage_percent: f32 = 0.0,
 };
 
-/// Event queue for managing platform events
-const EventQueue = struct {
-    allocator: std.mem.Allocator,
-    events: std.ArrayList(Event),
-    
-    fn init(allocator: std.mem.Allocator) EventQueue {
-        return .{
-            .allocator = allocator,
-            .events = std.ArrayList(Event).init(allocator),
-        };
-    }
-    
-    fn deinit(self: *EventQueue) void {
-        self.events.deinit();
-    }
-    
-    /// Wait for the next event (blocking - achieves 0% idle CPU!)
-    fn waitForEvent(self: *EventQueue) !Event {
-        // In a real implementation, this would block on platform events
-        // For now, simulate an event
-        return Event{
-            .type = .redraw_needed,
-            .timestamp = @intCast(std.time.milliTimestamp()),
-        };
-    }
-    
-    /// Check if events are available without blocking
-    fn hasEvents(self: *const EventQueue) bool {
-        return self.events.items.len > 0;
-    }
-    
-    /// Get next event without blocking (returns null if no events)
-    fn pollEvent(self: *EventQueue) !Event {
-        if (self.events.items.len == 0) {
-            return error.NoEventsAvailable;
-        }
-        return self.events.orderedRemove(0);
-    }
-};
+// SDL Platform backend now handles all event management
 
-/// Platform abstraction for different backends
-const Platform = struct {
-    allocator: std.mem.Allocator,
-    backend: PlatformBackend,
-    
-    fn init(allocator: std.mem.Allocator, config: AppConfig) !Platform {
-        return .{
-            .allocator = allocator,
-            .backend = config.backend,
-        };
-    }
-    
-    fn deinit(self: *Platform) void {
-        _ = self;
-        // Platform-specific cleanup
-    }
-};
+// Platform abstraction now handled by SdlPlatform
 
 /// GUI context that wraps our revolutionary data-oriented zlay
 /// Provides immediate-mode API with retained-mode performance

@@ -190,6 +190,7 @@ pub const LayoutEngine = struct {
         @memset(&engine.first_child_indices, INVALID_ELEMENT_ID);
         @memset(&engine.next_sibling_indices, INVALID_ELEMENT_ID);
         @memset(&engine.layout_styles, LayoutStyle{});
+        @memset(&engine.layout_styles_cold, LayoutStyleCold{});
         @memset(&engine.computed_rects, Rect.ZERO);
         @memset(&engine.computed_sizes, Size.ZERO);
         @memset(&engine.visual_styles, VisualStyle{});
@@ -251,6 +252,7 @@ pub const LayoutEngine = struct {
         
         // Initialize with default styles
         self.layout_styles[index] = LayoutStyle{};
+        self.layout_styles_cold[index] = LayoutStyleCold{};
         self.visual_styles[index] = VisualStyle{};
         self.text_styles[index] = TextStyle{};
         
@@ -388,6 +390,17 @@ pub const LayoutEngine = struct {
         }
     }
     
+    /// Set cold layout style for an element (spacing, positioning)
+    pub fn setLayoutStyleCold(self: *LayoutEngine, index: u32, style: LayoutStyleCold) void {
+        if (index >= self.element_count) return;
+        
+        // Cold style changes also require layout recalculation
+        if (!std.meta.eql(self.layout_styles_cold[index], style)) {
+            self.layout_styles_cold[index] = style;
+            self.markDirty(index);
+        }
+    }
+    
     /// Set visual style for an element
     pub fn setVisualStyle(self: *LayoutEngine, index: u32, style: VisualStyle) void {
         if (index >= self.element_count) return;
@@ -468,9 +481,10 @@ pub const LayoutEngine = struct {
         }
         
         const style = self.layout_styles[index];
+        const style_cold = self.layout_styles_cold[index];
         
         // Apply padding to available size
-        const content_size = style.padding.shrinkSize(available_size);
+        const content_size = style_cold.padding.shrinkSize(available_size);
         
         // Measure children first (for content-based sizing)
         var child_index = self.first_child_indices[index];
@@ -484,10 +498,10 @@ pub const LayoutEngine = struct {
         
         // Apply size constraints
         computed_size.width = std.math.clamp(computed_size.width, style.min_width, style.max_width);
-        computed_size.height = std.math.clamp(computed_size.height, style.min_height, style.max_height);
+        computed_size.height = std.math.clamp(computed_size.height, style.min_height, style_cold.max_height);
         
         // Add padding back
-        computed_size = style.padding.expandSize(computed_size);
+        computed_size = style_cold.padding.expandSize(computed_size);
         
         self.computed_sizes[index] = computed_size;
         
@@ -768,7 +782,7 @@ pub const LayoutEngine = struct {
     fn positionElement(self: *LayoutEngine, index: u32, position: Point) void {
         if (index >= self.element_count) return;
         
-        const style = self.layout_styles[index];
+        const style_cold = self.layout_styles_cold[index];
         const size = self.computed_sizes[index];
         
         // Set our position and size
@@ -781,7 +795,7 @@ pub const LayoutEngine = struct {
         
         // Position children within our content area
         if (self.first_child_indices[index] != INVALID_ELEMENT_ID) {
-            const content_rect = style.padding.shrinkRect(self.computed_rects[index]);
+            const content_rect = style_cold.padding.shrinkRect(self.computed_rects[index]);
             self.positionChildren(index, content_rect);
         }
     }
@@ -789,6 +803,7 @@ pub const LayoutEngine = struct {
     /// Position all children of a container with proper flex layout - data-oriented design
     fn positionChildren(self: *LayoutEngine, parent_index: u32, content_rect: Rect) void {
         const style = self.layout_styles[parent_index];
+        const style_cold = self.layout_styles_cold[parent_index];
         
         // First pass: calculate total intrinsic size and flex properties
         var total_intrinsic_size: f32 = 0;
@@ -816,7 +831,7 @@ pub const LayoutEngine = struct {
         if (child_count == 0) return;
         
         // Add gaps to total intrinsic size
-        const total_gap = if (child_count > 1) style.gap * @as(f32, @floatFromInt(child_count - 1)) else 0.0;
+        const total_gap = if (child_count > 1) style_cold.gap * @as(f32, @floatFromInt(child_count - 1)) else 0.0;
         total_intrinsic_size += total_gap;
         
         const available_space = switch (style.direction) {
@@ -848,20 +863,20 @@ pub const LayoutEngine = struct {
         };
         
         // Calculate spacing between children
-        var spacing = style.gap;
+        var spacing = style_cold.gap;
         if (flex_space > 0) {
             switch (style.main_axis_alignment) {
                 .space_between => {
                     if (child_count > 1) {
-                        spacing = style.gap + flex_space / @as(f32, @floatFromInt(child_count - 1));
+                        spacing = style_cold.gap + flex_space / @as(f32, @floatFromInt(child_count - 1));
                     }
                 },
                 .space_around => {
-                    spacing = style.gap + flex_space / @as(f32, @floatFromInt(child_count));
+                    spacing = style_cold.gap + flex_space / @as(f32, @floatFromInt(child_count));
                     current_pos += flex_space / @as(f32, @floatFromInt(child_count * 2));
                 },
                 .space_evenly => {
-                    spacing = style.gap + flex_space / @as(f32, @floatFromInt(child_count + 1));
+                    spacing = style_cold.gap + flex_space / @as(f32, @floatFromInt(child_count + 1));
                     current_pos = flex_space / @as(f32, @floatFromInt(child_count + 1));
                 },
                 else => {},

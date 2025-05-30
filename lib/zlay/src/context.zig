@@ -200,18 +200,21 @@ pub const Context = struct {
             .color = core.Color.rgba(0, 0, 0, 255),
         });
         
-        // Set layout style for text
+        // Set layout style for text (hot data only)
         self.layout.setLayoutStyle(index, LayoutStyle{
             .direction = .row,
             .main_axis_alignment = .start,
             .cross_axis_alignment = .start,
-            .padding = core.EdgeInsets.all(4.0),
-            .margin = core.EdgeInsets.all(2.0),
-            .gap = 0.0,
             .min_width = 0.0,
             .max_width = std.math.inf(f32),
             .min_height = 20.0,
-            .max_height = std.math.inf(f32),
+        });
+        
+        // Set cold layout style for text (spacing/positioning)
+        self.layout.setLayoutStyleCold(index, layout_engine.LayoutStyleCold{
+            .padding = core.EdgeInsets.all(4.0),
+            .margin = core.EdgeInsets.all(2.0),
+            .gap = 0.0,
         });
         
         return index;
@@ -235,17 +238,21 @@ pub const Context = struct {
             .color = core.Color.rgba(0, 0, 0, 255),
         });
         
-        // Set default button styles
+        // Set default button styles (hot data)
         self.layout.setLayoutStyle(index, LayoutStyle{
             .direction = .row,
             .main_axis_alignment = .center,
             .cross_axis_alignment = .center,
-            .padding = core.EdgeInsets.all(8.0),
-            .margin = core.EdgeInsets.all(2.0),
-            .gap = 0.0,
             .min_width = 80.0,
             .max_width = std.math.inf(f32),
             .min_height = 32.0,
+        });
+        
+        // Set button cold styles (spacing)
+        self.layout.setLayoutStyleCold(index, layout_engine.LayoutStyleCold{
+            .padding = core.EdgeInsets.all(8.0),
+            .margin = core.EdgeInsets.all(2.0),
+            .gap = 0.0,
             .max_height = 32.0,
         });
         
