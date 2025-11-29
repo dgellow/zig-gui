@@ -230,13 +230,10 @@ Create the **first UI library** to achieve:
 
 - [ ] **Development mode configuration**
   ```zig
-  var app = try App.init(.{
+  // App(MyState) is generic over your state type
+  var app = try App(MyState).init(allocator, .{
       .mode = .event_driven,
-      .hot_reload = .{
-          .enabled = true,
-          .watch_dirs = &.{ "src/", "styles/", "assets/" },
-          .reload_delay_ms = 50,
-      },
+      .hot_reload = true,
   });
   ```
 

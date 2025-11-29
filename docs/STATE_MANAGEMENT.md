@@ -506,7 +506,8 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    var app = try gui.App.init(gpa.allocator(), .event_driven);
+    // App(State) is generic over state type for type-safe UI functions
+    var app = try gui.App(AppState).init(gpa.allocator(), .{ .mode = .event_driven });
     defer app.deinit();
 
     var state = AppState{};

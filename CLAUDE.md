@@ -24,16 +24,21 @@ pub const ExecutionMode = enum {
 };
 
 // Example: Same code, different performance characteristics
+const AppState = struct {
+    counter: Tracked(i32) = .{ .value = 0 },
+};
+
 fn MyApp(gui: *GUI, state: *AppState) !void {
-    try gui.text("Counter: {}", .{state.counter});
+    try gui.text("Counter: {}", .{state.counter.get()});
     if (try gui.button("Increment")) {
-        state.counter += 1; // Only triggers redraw when needed
+        state.counter.set(state.counter.get() + 1); // O(1), triggers redraw via version change
     }
 }
 
-var desktop_app = try App.init(.event_driven);  // 0% idle CPU
-var game_app = try App.init(.game_loop);        // 60+ FPS
-var embedded_app = try App.init(.minimal);      // <32KB RAM
+// App(State) is generic over state type for type-safe UI functions
+var desktop_app = try App(AppState).init(allocator, .{ .mode = .event_driven });  // 0% idle CPU
+var game_app = try App(AppState).init(allocator, .{ .mode = .game_loop });        // 60+ FPS
+var embedded_app = try App(AppState).init(allocator, .{ .mode = .minimal });      // <32KB RAM
 ```
 
 ### Foundation: zlay Integration
@@ -398,21 +403,25 @@ pub const EmbeddedPlatform = struct {
 
 ```zig
 test "desktop app idle CPU usage" {
-    var app = try App.init(.event_driven);
-    
+    const TestState = struct { counter: Tracked(i32) = .{ .value = 0 } };
+    var app = try App(TestState).init(testing.allocator, .{ .mode = .event_driven });
+    defer app.deinit();
+
     // Simulate no events for 1 second
     const start_time = std.time.milliTimestamp();
     app.simulateNoEvents(1000); // 1 second
     const end_time = std.time.milliTimestamp();
-    
+
     // Should have spent 0% CPU (blocked on events)
     const cpu_usage = app.getCpuUsage(start_time, end_time);
     try std.testing.expect(cpu_usage < 0.01); // <1%
 }
 
 test "game loop performance" {
-    var app = try App.init(.game_loop);
-    
+    const GameState = struct { frame: Tracked(u32) = .{ .value = 0 } };
+    var app = try App(GameState).init(testing.allocator, .{ .mode = .game_loop });
+    defer app.deinit();
+
     // Simulate 1000 frames
     var total_frame_time: f64 = 0;
     for (0..1000) |_| {
@@ -421,10 +430,10 @@ test "game loop performance" {
         const end = std.time.nanoTimestamp();
         total_frame_time += @as(f64, @floatFromInt(end - start));
     }
-    
+
     const avg_frame_time = total_frame_time / 1000.0;
     const target_frame_time = 4_000_000.0; // 4ms = 250 FPS
-    
+
     try std.testing.expect(avg_frame_time < target_frame_time);
 }
 ```

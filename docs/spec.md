@@ -22,29 +22,35 @@ zig-gui is the **first GUI library** to solve the impossible trinity of UI devel
 
 ```zig
 // Same API, different execution strategies
+// State uses Tracked Signals for efficient change detection
+const AppState = struct {
+    counter: Tracked(i32) = .{ .value = 0 },
+};
+
 pub fn MyApp(gui: *GUI, state: *AppState) !void {
     try gui.window("My App", .{}, struct {
         fn content(g: *GUI, s: *AppState) !void {
-            try g.text("Counter: {}", .{s.counter});
-            
+            try g.text("Counter: {}", .{s.counter.get()});
+
             if (try g.button("Increment")) {
-                s.counter += 1; // Only triggers redraw when needed
+                s.counter.set(s.counter.get() + 1); // O(1), triggers redraw via version change
             }
         }
     }.content);
 }
 
+// App(State) is generic over state type for type-safe UI functions
 // Desktop email client: Event-driven (0% idle CPU)
-var desktop_app = try App.init(.event_driven);
-try desktop_app.run(MyApp);
+var desktop_app = try App(AppState).init(allocator, .{ .mode = .event_driven });
+try desktop_app.run(MyApp, &state);
 
 // Game UI: Continuous loop (60+ FPS)
-var game_app = try App.init(.game_loop);
-try game_app.run(MyApp);
+var game_app = try App(AppState).init(allocator, .{ .mode = .game_loop });
+try game_app.run(MyApp, &state);
 
 // Embedded device: Ultra-low power
-var embedded_app = try App.init(.minimal);
-try embedded_app.run(MyApp);
+var embedded_app = try App(AppState).init(allocator, .{ .mode = .minimal });
+try embedded_app.run(MyApp, &state);
 ```
 
 ### Foundation: Data-Oriented zlay
@@ -130,13 +136,10 @@ fn TodoApp(gui: *GUI, state: *TodoState) !void {
 
 ```zig
 // Development mode: Instant feedback
-var app = try App.init(.{
+// App(MyState) is generic over your state type
+var app = try App(MyState).init(allocator, .{
     .mode = .event_driven,
-    .hot_reload = .{
-        .enabled = true,
-        .watch_dirs = &.{ "src/", "styles/", "assets/" },
-        .reload_delay_ms = 50, // Nearly instant
-    },
+    .hot_reload = true,
 });
 
 // Change any file -> See results in < 100ms
