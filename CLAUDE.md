@@ -35,10 +35,14 @@ fn MyApp(gui: *GUI, state: *AppState) !void {
     }
 }
 
-// App(State) is generic over state type for type-safe UI functions
-var desktop_app = try App(AppState).init(allocator, .{ .mode = .event_driven });  // 0% idle CPU
-var game_app = try App(AppState).init(allocator, .{ .mode = .game_loop });        // 60+ FPS
-var embedded_app = try App(AppState).init(allocator, .{ .mode = .minimal });      // <32KB RAM
+// App(State, Platform) is generic over state and platform types
+// Platform provides events - comptime parameter, no vtable overhead
+var sdl_platform = try SdlPlatform.init(allocator, config);
+var app = try App(AppState, SdlPlatform).init(allocator, &sdl_platform, .{ .mode = .event_driven });
+
+// For testing, use HeadlessPlatform
+var headless = HeadlessPlatform.init();
+var test_app = try App(AppState, HeadlessPlatform).init(allocator, &headless, .{ .mode = .server_side });
 ```
 
 ### Foundation: zlay Integration

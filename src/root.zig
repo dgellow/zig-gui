@@ -28,6 +28,9 @@ pub const PerformanceStats = @import("app.zig").PerformanceStats;
 pub const Event = @import("app.zig").Event;
 pub const EventType = @import("app.zig").EventType;
 
+/// Headless platform for testing and server-side rendering
+pub const HeadlessPlatform = @import("app.zig").HeadlessPlatform;
+
 // =============================================================================
 // GUI Types
 // =============================================================================
@@ -157,4 +160,13 @@ pub const events = struct {
     pub const Key = @import("events.zig").Key;
     pub const MouseButton = @import("events.zig").MouseButton;
     pub const KeyModifiers = @import("events.zig").KeyModifiers;
+};
+
+// =============================================================================
+// Platform Backends
+// =============================================================================
+
+pub const platforms = struct {
+    /// SDL platform backend - true 0% idle CPU via SDL_WaitEvent()
+    pub const SdlPlatform = @import("platforms/sdl.zig").SdlPlatform;
 };

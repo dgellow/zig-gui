@@ -11,7 +11,6 @@ const EventManager = @import("events.zig").EventManager;
 const AnimationSystem = @import("animation.zig").AnimationSystem;
 const AssetManager = @import("asset.zig").AssetManager;
 const View = @import("components/view.zig").View;
-const app = @import("app.zig");
 
 /// Configuration options for GUI initialization
 pub const GUIConfig = struct {
@@ -251,27 +250,8 @@ pub const GUI = struct {
     }
 
     // =========================================================================
-    // Event Handling
+    // Input State (set by platform, read by widgets)
     // =========================================================================
-
-    /// Wait for the next event (blocks, 0% CPU while waiting)
-    /// Returns null if no event available or error occurred
-    pub fn waitForEvent(self: *GUI) ?app.Event {
-        _ = self;
-        // TODO: Integrate with platform backend (SDL_WaitEvent)
-        // For now, return a placeholder redraw event
-        return app.Event{
-            .type = .redraw_needed,
-            .timestamp = @intCast(std.time.milliTimestamp()),
-        };
-    }
-
-    /// Poll for event without blocking (for game loop mode)
-    pub fn pollEvent(self: *GUI) ?app.Event {
-        _ = self;
-        // TODO: Integrate with platform backend (SDL_PollEvent)
-        return null;
-    }
 
     /// Update mouse position (called by platform)
     pub fn setMousePosition(self: *GUI, x: f32, y: f32) void {
