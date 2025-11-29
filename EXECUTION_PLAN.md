@@ -38,18 +38,40 @@ Create the **first UI library** to achieve:
   };
   ```
 
-- [ ] **Create App structure**
+- [ ] **Create App structure with Platform interface**
   ```zig
-  pub const App = struct {
-      mode: ExecutionMode,
-      gui: *GUI,
-      event_queue: EventQueue,
-      running: bool,
-      
-      pub fn init(allocator: std.mem.Allocator, mode: ExecutionMode) !*App
-      pub fn deinit(self: *App) void
-      pub fn run(self: *App, ui_func: UIFunction, state: *anyopaque) !void
+  /// Platform interface (vtable for runtime dispatch)
+  pub const PlatformInterface = struct {
+      ptr: *anyopaque,
+      vtable: *const VTable,
+
+      pub const VTable = struct {
+          waitEvent: *const fn (*anyopaque) anyerror!Event,
+          pollEvent: *const fn (*anyopaque) ?Event,
+          present: *const fn (*anyopaque) void,
+      };
   };
+
+  /// App(State) is generic over state type for type-safe UI functions
+  pub fn App(comptime State: type) type {
+      return struct {
+          platform: PlatformInterface,  // Borrowed, not owned
+          mode: ExecutionMode,
+          gui: *GUI,
+          running: bool,
+
+          pub fn init(allocator: std.mem.Allocator, platform: PlatformInterface, config: Config) !@This()
+          pub fn deinit(self: *@This()) void
+          pub fn run(self: *@This(), ui_func: fn (*GUI, *State) anyerror!void, state: *State) !void
+      };
+  }
+
+  // Usage: Platform at root, App borrows
+  var platform = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+  defer platform.deinit();
+
+  var app = try App(MyState).init(allocator, platform.interface(), .{ .mode = .event_driven });
+  defer app.deinit();
   ```
 
 - [ ] **Set up basic testing framework**
@@ -230,8 +252,12 @@ Create the **first UI library** to achieve:
 
 - [ ] **Development mode configuration**
   ```zig
+  // Platform at root, App borrows
+  var platform = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+  defer platform.deinit();
+
   // App(MyState) is generic over your state type
-  var app = try App(MyState).init(allocator, .{
+  var app = try App(MyState).init(allocator, platform.interface(), .{
       .mode = .event_driven,
       .hot_reload = true,
   });
@@ -448,9 +474,20 @@ Create the **first UI library** to achieve:
 - [ ] **C API design for mobile**
   ```c
   // C API designed for easy mobile integration
-  ZigGuiApp* zig_gui_app_create_mobile(ZigGuiMobileConfig config);
-  void zig_gui_app_handle_touch(ZigGuiApp* app, float x, float y, ZigGuiTouchPhase phase);
+  // Platform created first - wraps native view
+  ZigGuiPlatform* zig_gui_metal_platform_create(void* ios_view, ZigGuiMobileConfig config);  // iOS
+  ZigGuiPlatform* zig_gui_vulkan_platform_create(void* surface, ZigGuiMobileConfig config);  // Android
+
+  // App borrows platform via interface
+  ZigGuiApp* zig_gui_app_create(ZigGuiPlatformInterface interface, ZigGuiExecutionMode mode);
+
+  // Touch events go through platform
+  void zig_gui_platform_handle_touch(ZigGuiPlatform* platform, float x, float y, ZigGuiTouchPhase phase);
   void zig_gui_app_render_frame(ZigGuiApp* app);
+
+  // Cleanup: app first, then platform
+  void zig_gui_app_destroy(ZigGuiApp* app);
+  void zig_gui_platform_destroy(ZigGuiPlatform* platform);
   ```
 
 - [ ] **iOS integration**
@@ -646,17 +683,19 @@ Create the **first UI library** to achieve:
 #### Tasks:
 - [ ] **C API design**
   ```c
-  // Clean, simple, memory-safe C API
+  // Clean, simple, memory-safe C API with clear ownership
+  typedef struct ZigGuiPlatform ZigGuiPlatform;
   typedef struct ZigGuiApp ZigGuiApp;
   typedef struct ZigGuiState ZigGuiState;
-  
+  typedef struct ZigGuiPlatformInterface ZigGuiPlatformInterface;
+
   // Execution modes
   typedef enum {
       ZIG_GUI_EVENT_DRIVEN,
       ZIG_GUI_GAME_LOOP,
       ZIG_GUI_MINIMAL
   } ZigGuiExecutionMode;
-  
+
   // Error handling
   typedef enum {
       ZIG_GUI_OK = 0,
@@ -664,22 +703,35 @@ Create the **first UI library** to achieve:
       ZIG_GUI_ERROR_INVALID_PARAMETER,
       ZIG_GUI_ERROR_PLATFORM_ERROR
   } ZigGuiError;
-  
-  // Core functions
-  ZigGuiApp* zig_gui_app_create(ZigGuiExecutionMode mode);
+
+  // Platform functions (owns OS resources)
+  ZigGuiPlatform* zig_gui_sdl_platform_create(int width, int height, const char* title);
+  ZigGuiPlatform* zig_gui_framebuffer_platform_create(void* buffer, int width, int height);
+  ZigGuiPlatformInterface zig_gui_platform_interface(ZigGuiPlatform* platform);
+  void zig_gui_platform_destroy(ZigGuiPlatform* platform);
+
+  // App functions (borrows platform via interface)
+  ZigGuiApp* zig_gui_app_create(ZigGuiPlatformInterface interface, ZigGuiExecutionMode mode);
   void zig_gui_app_destroy(ZigGuiApp* app);
   ZigGuiError zig_gui_app_run(ZigGuiApp* app, ZigGuiUIFunction ui_func, void* user_data);
-  
+
   // State management
   ZigGuiState* zig_gui_state_create(void);
   void zig_gui_state_destroy(ZigGuiState* state);
   ZigGuiError zig_gui_state_set_int(ZigGuiState* state, const char* key, int32_t value);
   int32_t zig_gui_state_get_int(ZigGuiState* state, const char* key, int32_t default_value);
-  
+
   // UI functions
   bool zig_gui_button(ZigGuiApp* app, const char* text);
   void zig_gui_text(ZigGuiApp* app, const char* text);
   bool zig_gui_text_input(ZigGuiApp* app, char* buffer, size_t buffer_size);
+
+  // Usage pattern:
+  // 1. Create platform (owns window/context)
+  // 2. Create app with platform.interface()
+  // 3. Run app
+  // 4. Destroy app first (stops borrowing)
+  // 5. Destroy platform last (releases OS resources)
   ```
 
 - [ ] **ABI versioning**

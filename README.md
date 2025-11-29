@@ -93,9 +93,19 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    // Desktop app: 0% CPU when idle, instant response
+    // Platform owns OS resources (window, GL context, event source)
+    var platform = try gui.platforms.SdlPlatform.init(gpa.allocator(), .{
+        .width = 800,
+        .height = 600,
+        .title = "Todo App",
+    });
+    defer platform.deinit();
+
+    // App borrows platform via interface (vtable for runtime dispatch)
     // App is generic over your state type for type-safe UI functions
-    var app = try gui.App(TodoState).init(gpa.allocator(), .{ .mode = .event_driven });
+    var app = try gui.App(TodoState).init(gpa.allocator(), platform.interface(), .{
+        .mode = .event_driven,  // 0% CPU when idle, instant response
+    });
     defer app.deinit();
 
     var state = TodoState{};
@@ -108,36 +118,54 @@ pub fn main() !void {
 ## 🔥 The Secret: Hybrid Architecture
 
 ```zig
-// Same API, different execution strategies
-// App(State) is generic over your state type
-var desktop_app = try App(MyState).init(allocator, .{ .mode = .event_driven });  // 0% idle CPU
-var game_app = try App(MyState).init(allocator, .{ .mode = .game_loop });        // 60+ FPS
-var embedded_app = try App(MyState).init(allocator, .{ .mode = .minimal });      // <32KB RAM
+// Platform at root - owns OS resources (window, GL context, events)
+var sdl = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+defer sdl.deinit();
+
+// App borrows platform via interface (vtable) - same API, different execution
+var desktop_app = try App(MyState).init(allocator, sdl.interface(), .{ .mode = .event_driven });  // 0% idle CPU
+var game_app = try App(MyState).init(allocator, sdl.interface(), .{ .mode = .game_loop });        // 60+ FPS
+var embedded_app = try App(MyState).init(allocator, fb.interface(), .{ .mode = .minimal });       // <32KB RAM
 ```
 
 ### Event-Driven Mode (Desktop Apps)
 ```zig
+// app.run() blocks on platform events internally - 0% CPU when idle
+try app.run(MyApp, &state);
+
+// Or manual control:
 while (app.isRunning()) {
     const event = try app.waitForEvent(); // 🛌 Sleeps here (0% CPU)
     if (event.requiresRedraw()) {
-        try app.render(MyApp); // Only when needed
+        try app.render(MyApp, &state); // Only when needed
     }
 }
 ```
 
 ### Game Loop Mode (Games/Animations)
-```zig  
-while (game.isRunning()) {
-    try app.update(GameUI); // 🚄 120+ FPS
-    game.limitFrameRate(120);
+```zig
+// Game owns the loop, App integrates seamlessly
+while (game.running) {
+    game.update(dt);
+
+    app.processEvents();          // Non-blocking, polls platform
+    app.renderFrame(HudUI, &hud); // 🚄 120+ FPS
+
+    game.present();
 }
 ```
 
 ### Minimal Mode (Embedded)
 ```zig
-// Ultra-efficient for microcontrollers
-var embedded_app = try App.initMinimal(arena.allocator()); // <32KB
-try embedded_app.handleInput(button_press);
+// Framebuffer platform for microcontrollers
+var fb = try FramebufferPlatform.init(display_buffer);
+var embedded_app = try App(MyState).init(arena.allocator(), fb.interface(), .{ .mode = .minimal });
+
+// Interrupt-driven: only process on actual input
+fn buttonIsr() void {
+    embedded_app.injectEvent(.{ .button_press = .a });
+    embedded_app.renderFrame(EmbeddedUI, &state);  // <32KB RAM
+}
 ```
 
 ## 🎯 State Management: Tracked Signals
@@ -208,7 +236,10 @@ fn EmailClient(gui: *GUI, state: *EmailState) !void {
 Change code, see results instantly:
 
 ```zig
-var app = try App(MyState).init(allocator, .{
+var platform = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+defer platform.deinit();
+
+var app = try App(MyState).init(allocator, platform.interface(), .{
     .mode = .event_driven,
     .hot_reload = true, // 🔥 Magic happens here
 });
@@ -221,12 +252,18 @@ Perfect for any language:
 ```c
 #include "zig_gui.h"
 
-ZigGuiApp* app = zig_gui_app_create(ZIG_GUI_EVENT_DRIVEN);
-ZigGuiState* state = zig_gui_state_create();
+// Platform created first - owns window and OS resources
+ZigGuiPlatform* platform = zig_gui_sdl_platform_create(800, 600, "My App");
+
+// App borrows platform via interface - runtime dispatch via vtable
+ZigGuiApp* app = zig_gui_app_create(
+    zig_gui_platform_interface(platform),
+    ZIG_GUI_EVENT_DRIVEN
+);
 
 while (zig_gui_app_is_running(app)) {
     ZigGuiEvent event = zig_gui_app_wait_event(app); // 0% CPU idle
-    
+
     if (event.type == ZIG_GUI_EVENT_REDRAW_NEEDED) {
         zig_gui_begin_frame(app);
         zig_gui_text(app, "Hello from C!");
@@ -236,39 +273,43 @@ while (zig_gui_app_is_running(app)) {
         zig_gui_end_frame(app);
     }
 }
+
+zig_gui_app_destroy(app);
+zig_gui_platform_destroy(platform);
 ```
 
 ### 📱 Universal Platform Support
 
 **Desktop** (Event-driven, 0% idle CPU):
 ```zig
-var desktop = try Platform.desktop(.{
+var sdl = try SdlPlatform.init(allocator, .{
     .backend = .opengl,
-    .window = .{ .width = 1200, .height = 800 },
+    .width = 1200,
+    .height = 800,
 });
+var app = try App(MyState).init(allocator, sdl.interface(), .{ .mode = .event_driven });
 ```
 
 **Mobile** (iOS/Android via C API):
 ```zig
-var mobile = try Platform.mobile(.{
-    .backend = .metal, // or .vulkan for Android
-});
+var metal = try MetalPlatform.init(ios_view, .{});  // Or VulkanPlatform for Android
+var app = try App(MyState).init(allocator, metal.interface(), .{ .mode = .event_driven });
 ```
 
 **Embedded** (Teensy, ESP32, etc.):
-```zig  
-var embedded = try Platform.embedded(.{
-    .backend = .framebuffer,
-    .display = .{ .width = 320, .height = 240 },
+```zig
+var fb = try FramebufferPlatform.init(.{
+    .buffer = display_buffer,
+    .width = 320,
+    .height = 240,
 });
+var app = try App(MyState).init(arena.allocator(), fb.interface(), .{ .mode = .minimal });
 ```
 
 **Web** (WebAssembly):
 ```zig
-var web = try Platform.web(.{
-    .backend = .canvas,
-    .container_id = "app-root",
-});
+var canvas = try CanvasPlatform.init(.{ .container_id = "app-root" });
+var app = try App(MyState).init(allocator, canvas.interface(), .{ .mode = .event_driven });
 ```
 
 ## 📊 Performance
@@ -428,21 +469,47 @@ app.run();
 
 ## 🔍 Architecture
 
+### Ownership Model: Platform at Root
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ User Code                                                           │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Platform (user owns)                                         │   │
+│  │  - Window handle, GL context, event source                   │   │
+│  │  - Exposes interface() → PlatformInterface (vtable)          │   │
+│  └────────────────────────┬────────────────────────────────────┘   │
+│                           │ borrows                                 │
+│  ┌────────────────────────▼────────────────────────────────────┐   │
+│  │ App(State) (user owns)                                       │   │
+│  │  - Holds PlatformInterface (vtable, no ownership)            │   │
+│  │  - Owns GUI, execution logic                                 │   │
+│  │  - Generic over user's State type                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Why this model?**
+- **Clear ownership**: Platform owns OS resources, App borrows
+- **Runtime flexibility**: Different platforms selected at runtime (C API compatible)
+- **Testability**: HeadlessPlatform for unit tests with deterministic event injection
+- **Game integration**: Game owns loop, App integrates via processEvents()
+
 ### Foundation: zlay (Data-Oriented Layout Engine)
 - **Structure-of-Arrays** for cache efficiency
-- **SIMD optimization** where beneficial  
+- **SIMD optimization** where beneficial
 - **Predictable performance** (<10μs per element)
 - **Minimal allocations** (arena-based)
 
-### zig-gui Core  
+### zig-gui Core
 - **Event-driven execution** (0% idle CPU)
 - **Smart invalidation** (only redraw changes)
 - **Hot reload** (instant feedback)
-- **Platform abstraction** (same code everywhere)
+- **Platform abstraction** (runtime vtable dispatch)
 
 ### C API Layer
 - **Zero-overhead** (direct Zig mapping)
-- **Memory safe** (clear ownership)
+- **Memory safe** (clear ownership - platform first, app second)
 - **ABI stable** (versioned interface)
 - **Language friendly** (easy bindings)
 
@@ -541,14 +608,25 @@ fn myApp(gui: *GUI, state: *AppState) !void {
     }
 }
 
-// Framework chooses execution strategy based on platform
-var desktop = try App(AppState).init(allocator, .{ .mode = .event_driven });   // 0% idle CPU
-var game = try App(AppState).init(allocator, .{ .mode = .game_loop });         // 120+ FPS
-var embedded = try App(AppState).init(allocator, .{ .mode = .minimal });       // <32KB RAM
-var server = try App(AppState).init(allocator, .{ .mode = .server_side });     // Headless rendering
+// Platform owns OS resources, App borrows via interface (vtable)
+var sdl = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+defer sdl.deinit();
+
+// Same App, different execution modes
+var desktop = try App(AppState).init(allocator, sdl.interface(), .{ .mode = .event_driven });   // 0% idle CPU
+var game = try App(AppState).init(allocator, sdl.interface(), .{ .mode = .game_loop });         // 120+ FPS
+
+// Embedded: different platform, same App API
+var fb = try FramebufferPlatform.init(display);
+var embedded = try App(AppState).init(arena.allocator(), fb.interface(), .{ .mode = .minimal });  // <32KB RAM
+
+// Testing: headless platform with deterministic event injection
+var headless = HeadlessPlatform.init();
+var test_app = try App(AppState).init(allocator, headless.interface(), .{ .mode = .server_side });
+headless.injectClick(100, 100);  // Deterministic testing
 ```
 
-**Same code. Different execution. Optimal everywhere.**
+**Same code. Different platforms. Optimal everywhere.**
 
 ---
 

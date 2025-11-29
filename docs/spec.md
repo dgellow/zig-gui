@@ -18,10 +18,29 @@ zig-gui is the **first GUI library** to solve the impossible trinity of UI devel
 
 ## 🏗️ Core Architecture
 
+### Ownership Model: Platform at Root
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ User Code                                                           │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ Platform (user owns)                                         │   │
+│  │  - Window handle, GL context, event source                   │   │
+│  │  - Exposes interface() → PlatformInterface (vtable)          │   │
+│  └────────────────────────┬────────────────────────────────────┘   │
+│                           │ borrows                                 │
+│  ┌────────────────────────▼────────────────────────────────────┐   │
+│  │ App(State) (user owns)                                       │   │
+│  │  - Holds PlatformInterface (vtable, no ownership)            │   │
+│  │  - Owns GUI, execution logic                                 │   │
+│  │  - Generic over user's State type                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
 ### The Hybrid Engine
 
 ```zig
-// Same API, different execution strategies
 // State uses Tracked Signals for efficient change detection
 const AppState = struct {
     counter: Tracked(i32) = .{ .value = 0 },
@@ -39,17 +58,25 @@ pub fn MyApp(gui: *GUI, state: *AppState) !void {
     }.content);
 }
 
+// Platform created first - owns OS resources (window, GL context, event source)
+var sdl = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+defer sdl.deinit();
+
+// App borrows platform via interface (vtable for runtime dispatch)
 // App(State) is generic over state type for type-safe UI functions
+var state = AppState{};
+
 // Desktop email client: Event-driven (0% idle CPU)
-var desktop_app = try App(AppState).init(allocator, .{ .mode = .event_driven });
+var desktop_app = try App(AppState).init(allocator, sdl.interface(), .{ .mode = .event_driven });
 try desktop_app.run(MyApp, &state);
 
-// Game UI: Continuous loop (60+ FPS)
-var game_app = try App(AppState).init(allocator, .{ .mode = .game_loop });
+// Game UI: Continuous loop (60+ FPS) - same platform, different mode
+var game_app = try App(AppState).init(allocator, sdl.interface(), .{ .mode = .game_loop });
 try game_app.run(MyApp, &state);
 
-// Embedded device: Ultra-low power
-var embedded_app = try App(AppState).init(allocator, .{ .mode = .minimal });
+// Embedded device: Different platform, same App API
+var fb = try FramebufferPlatform.init(display_buffer);
+var embedded_app = try App(AppState).init(arena.allocator(), fb.interface(), .{ .mode = .minimal });
 try embedded_app.run(MyApp, &state);
 ```
 
@@ -136,8 +163,11 @@ fn TodoApp(gui: *GUI, state: *TodoState) !void {
 
 ```zig
 // Development mode: Instant feedback
+var sdl = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+defer sdl.deinit();
+
 // App(MyState) is generic over your state type
-var app = try App(MyState).init(allocator, .{
+var app = try App(MyState).init(allocator, sdl.interface(), .{
     .mode = .event_driven,
     .hot_reload = true,
 });
@@ -175,34 +205,45 @@ pub const PlatformBackend = enum {
 
 ```zig
 // Desktop (Windows/macOS/Linux)
-var desktop = try Platform.desktop(.{
+// Platform owns window and GL context
+var sdl = try SdlPlatform.init(allocator, .{
     .backend = .opengl,
-    .window = .{ .width = 1200, .height = 800, .title = "My App" },
+    .width = 1200,
+    .height = 800,
+    .title = "My App",
 });
+defer sdl.deinit();
+var app = try App(MyState).init(allocator, sdl.interface(), .{ .mode = .event_driven });
 
 // Mobile (iOS/Android via C API)
-var mobile = try Platform.mobile(.{
-    .backend = .metal, // or .vulkan for Android
-    .orientation = .portrait,
-});
+// Platform wraps native view
+var metal = try MetalPlatform.init(ios_view, .{});  // Or VulkanPlatform for Android
+defer metal.deinit();
+var mobile_app = try App(MyState).init(allocator, metal.interface(), .{ .mode = .event_driven });
 
 // Embedded (Teensy, ESP32, etc.)
-var embedded = try Platform.embedded(.{
-    .backend = .framebuffer,
-    .display = .{ .width = 320, .height = 240, .spi_config = spi_cfg },
+// Platform owns framebuffer
+var fb = try FramebufferPlatform.init(.{
+    .buffer = display_buffer,
+    .width = 320,
+    .height = 240,
+    .spi_config = spi_cfg,
 });
+var embedded_app = try App(MyState).init(arena.allocator(), fb.interface(), .{ .mode = .minimal });
 
 // Web (via WebAssembly + C API)
-var web = try Platform.web(.{
-    .backend = .canvas,
-    .container_id = "app-root",
-});
+var canvas = try CanvasPlatform.init(.{ .container_id = "app-root" });
+var web_app = try App(MyState).init(allocator, canvas.interface(), .{ .mode = .event_driven });
 
 // Game Engine (Unity, Unreal, Godot via C API)
-var game_engine = try Platform.plugin(.{
-    .backend = .custom,
-    .renderer = game_engine_renderer,
-});
+// Platform wraps engine's renderer
+var engine = try CustomPlatform.init(.{ .renderer = game_engine_renderer });
+var game_app = try App(MyState).init(allocator, engine.interface(), .{ .mode = .game_loop });
+
+// Testing (deterministic event injection)
+var headless = HeadlessPlatform.init();
+var test_app = try App(MyState).init(allocator, headless.interface(), .{ .mode = .server_side });
+headless.injectClick(100, 100);  // Deterministic testing
 ```
 
 ## 🔌 World-Class C API
@@ -220,8 +261,14 @@ var game_engine = try Platform.plugin(.{
 ```c
 #include "zig_gui.h"
 
-// Simple, clean initialization
-ZigGuiApp* app = zig_gui_app_create(ZIG_GUI_EVENT_DRIVEN);
+// Platform created first - owns window and OS resources
+ZigGuiPlatform* platform = zig_gui_sdl_platform_create(800, 600, "My App");
+
+// App borrows platform via interface (vtable for runtime dispatch)
+ZigGuiApp* app = zig_gui_app_create(
+    zig_gui_platform_interface(platform),
+    ZIG_GUI_EVENT_DRIVEN
+);
 ZigGuiState* state = zig_gui_state_create();
 
 // Type-safe state management
@@ -231,32 +278,33 @@ zig_gui_state_set_int(state, "counter", 0);
 while (zig_gui_app_is_running(app)) {
     // Event-driven: This blocks until events occur (0% CPU idle)
     ZigGuiEvent event = zig_gui_app_wait_event(app);
-    
+
     // Handle events
     if (event.type == ZIG_GUI_EVENT_REDRAW_NEEDED) {
         // Begin UI definition
         zig_gui_begin_frame(app);
-        
+
         // Simple, immediate-mode API
         zig_gui_window_begin(app, "My App", NULL);
-        
+
         int counter = zig_gui_state_get_int(state, "counter");
         zig_gui_text_formatted(app, "Counter: %d", counter);
-        
+
         if (zig_gui_button(app, "Increment")) {
             zig_gui_state_set_int(state, "counter", counter + 1);
         }
-        
+
         zig_gui_window_end(app);
-        
+
         // End frame - renders only if needed
         zig_gui_end_frame(app);
     }
 }
 
-// Clean shutdown
+// Clean shutdown - app first (borrows platform), then platform
 zig_gui_state_destroy(state);
 zig_gui_app_destroy(app);
+zig_gui_platform_destroy(platform);  // Platform last (owns OS resources)
 ```
 
 ### Language Bindings

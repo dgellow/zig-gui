@@ -143,24 +143,33 @@ The Tracked system is the **bridge** between immediate-mode API and retained-mod
 ### Event-Driven Mode (Desktop)
 
 ```zig
-pub fn runEventDriven(app: *App, ui_fn: anytype, state: anytype) !void {
+// Platform owns OS resources (window, GL context, event source)
+var platform = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+defer platform.deinit();
+
+// App borrows platform via interface (vtable for runtime dispatch)
+var app = try App(MyState).init(allocator, platform.interface(), .{ .mode = .event_driven });
+defer app.deinit();
+
+// Internal implementation of event-driven mode:
+pub fn runEventDriven(self: *Self, ui_fn: anytype, state: anytype) !void {
     var last_version: u64 = 0;
 
     // Initial render
-    try app.render(ui_fn, state);
+    try self.render(ui_fn, state);
     last_version = computeStateVersion(state);
 
-    while (app.isRunning()) {
-        // BLOCK here - 0% CPU
-        const event = try app.platform.waitForEvent();
+    while (self.isRunning()) {
+        // BLOCK here via platform vtable - 0% CPU
+        const event = try self.platform.waitEvent();
 
         // Process event (may modify state)
-        try app.handleEvent(event, state);
+        try self.handleEvent(event, state);
 
         // Check if state changed - O(N) field count, not data size
         const new_version = computeStateVersion(state);
         if (new_version != last_version or event.requiresRedraw()) {
-            try app.render(ui_fn, state);
+            try self.render(ui_fn, state);
             last_version = new_version;
         }
     }
@@ -182,44 +191,59 @@ fn computeStateVersion(state: anytype) u64 {
 ### Game Loop Mode (Games)
 
 ```zig
-pub fn runGameLoop(app: *App, ui_fn: anytype, state: anytype) !void {
-    while (app.isRunning()) {
-        // Poll all events (non-blocking)
-        while (app.platform.pollEvent()) |event| {
-            try app.handleEvent(event, state);
-        }
+// Game owns the main loop, App integrates seamlessly
+var platform = try SdlPlatform.init(allocator, .{ .width = 1920, .height = 1080 });
+defer platform.deinit();
 
-        // Always render - games need consistent frame rate
-        // Internal diffing minimizes actual GPU work
-        try app.render(ui_fn, state);
+var app = try App(HudState).init(allocator, platform.interface(), .{ .mode = .game_loop });
+defer app.deinit();
 
-        app.limitFrameRate(120);
-    }
+// Game's main loop
+while (game.running) {
+    game.update(dt);
+
+    // App polls events non-blocking via platform vtable
+    app.processEvents();
+
+    // Render HUD - internal diffing minimizes GPU work
+    app.renderFrame(HudUI, &hud_state);
+
+    game.present();
 }
 ```
 
 ### Minimal Mode (Embedded)
 
 ```zig
-pub fn runMinimal(app: *App, ui_fn: anytype, state: anytype) !void {
+// Framebuffer platform for microcontrollers
+var platform = FramebufferPlatform.init(.{
+    .buffer = display_buffer,
+    .width = 320,
+    .height = 240,
+});
+
+var app = try App(DeviceState).init(arena.allocator(), platform.interface(), .{ .mode = .minimal });
+
+// Internal implementation tracks per-field changes for partial updates:
+pub fn runMinimal(self: *Self, ui_fn: anytype, state: anytype) !void {
     var last_versions: [MAX_FIELDS]u32 = undefined;
     captureFieldVersions(state, &last_versions);
 
     // Initial render
-    try app.render(ui_fn, state);
+    try self.render(ui_fn, state);
 
-    while (app.isRunning()) {
-        // Deep sleep - wake only on hardware interrupt
-        const event = try app.platform.waitForEventLowPower();
+    while (self.isRunning()) {
+        // Deep sleep - wake only on hardware interrupt (via platform vtable)
+        const event = try self.platform.waitEvent();
 
-        try app.handleEvent(event, state);
+        try self.handleEvent(event, state);
 
         // Find which specific fields changed
         const changed_fields = findChangedFields(state, &last_versions);
 
         if (changed_fields.len > 0) {
             // Partial update - only redraw affected regions
-            try app.renderPartial(ui_fn, state, changed_fields);
+            try self.renderPartial(ui_fn, state, changed_fields);
             captureFieldVersions(state, &last_versions);
         }
     }
@@ -506,8 +530,19 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
+    // Platform owns OS resources (window, GL context, event source)
+    var platform = try gui.platforms.SdlPlatform.init(gpa.allocator(), .{
+        .width = 800,
+        .height = 600,
+        .title = "Todo App",
+    });
+    defer platform.deinit();
+
+    // App borrows platform via interface (vtable for runtime dispatch)
     // App(State) is generic over state type for type-safe UI functions
-    var app = try gui.App(AppState).init(gpa.allocator(), .{ .mode = .event_driven });
+    var app = try gui.App(AppState).init(gpa.allocator(), platform.interface(), .{
+        .mode = .event_driven,
+    });
     defer app.deinit();
 
     var state = AppState{};

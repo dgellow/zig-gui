@@ -23,12 +23,19 @@ zig_gui_state_set_int()       // Set integer state
 zig_gui_button()              // Render button
 ```
 
-### 2. Clear Ownership Model
+### 2. Clear Ownership Model (Platform at Root)
 ```c
-// Create/destroy pairs - always explicit
-ZigGuiApp* app = zig_gui_app_create(ZIG_GUI_EVENT_DRIVEN);
+// Platform created first - owns OS resources (window, GL context, event source)
+ZigGuiPlatform* platform = zig_gui_sdl_platform_create(800, 600, "My App");
+
+// App borrows platform via interface (vtable for runtime dispatch)
+ZigGuiApp* app = zig_gui_app_create(zig_gui_platform_interface(platform), ZIG_GUI_EVENT_DRIVEN);
+
 // ... use app ...
-zig_gui_app_destroy(app); // Required cleanup
+
+// Destroy order: App first (stops borrowing), Platform last (releases OS resources)
+zig_gui_app_destroy(app);
+zig_gui_platform_destroy(platform);
 
 // No hidden allocations, no garbage collection
 ```
@@ -165,31 +172,58 @@ typedef enum {
 } ZigGuiBackend;
 
 /**
+ * Opaque handle to a platform (owns OS resources).
+ * Platform must be created first and destroyed last.
+ */
+typedef struct ZigGuiPlatform ZigGuiPlatform;
+
+/**
+ * Platform interface (vtable for runtime dispatch).
+ * Passed to App, which borrows the platform.
+ */
+typedef struct {
+    void* ptr;
+    void* vtable;
+} ZigGuiPlatformInterface;
+
+/**
  * Configuration for creating an application.
  */
 typedef struct {
     ZigGuiExecutionMode mode;
-    ZigGuiBackend backend;
-    
-    // Window configuration (ignored for embedded/web)
-    int window_width;
-    int window_height;
-    const char* window_title;
-    
+
     // Performance tuning
     int target_fps;              // For game loop mode (default: 60)
     int max_memory_kb;           // Memory budget (default: unlimited)
-    
+
     // Development features
     bool enable_hot_reload;      // Enable hot reload (default: false)
     const char** watch_dirs;     // Directories to watch (NULL-terminated)
-    
-    // Platform-specific configuration
-    void* platform_config;      // Platform-specific data
-} ZigGuiConfig;
+} ZigGuiAppConfig;
+
+/**
+ * Configuration for creating an SDL platform.
+ */
+typedef struct {
+    int width;
+    int height;
+    const char* title;
+    ZigGuiBackend backend;       // Default: ZIG_GUI_BACKEND_OPENGL
+} ZigGuiSdlConfig;
+
+/**
+ * Configuration for creating a framebuffer platform (embedded).
+ */
+typedef struct {
+    void* buffer;                // Framebuffer memory
+    int width;
+    int height;
+    int color_depth;             // Bits per pixel (16, 24, 32)
+} ZigGuiFramebufferConfig;
 
 /**
  * Opaque handle to the GUI application.
+ * App borrows platform via interface - does NOT own it.
  */
 typedef struct ZigGuiApp ZigGuiApp;
 
@@ -227,25 +261,92 @@ typedef struct {
 typedef void (*ZigGuiUIFunction)(ZigGuiApp* app, ZigGuiState* state, void* user_data);
 
 // =============================================================================
-// APPLICATION LIFECYCLE
+// PLATFORM LIFECYCLE (Created First, Destroyed Last)
 // =============================================================================
 
 /**
- * Create a new GUI application with default configuration.
+ * Create an SDL platform (desktop).
+ * Platform owns the window, GL context, and event source.
+ * @param width Window width
+ * @param height Window height
+ * @param title Window title
+ * @return Platform handle, or NULL on failure
+ */
+ZigGuiPlatform* zig_gui_sdl_platform_create(int width, int height, const char* title);
+
+/**
+ * Create an SDL platform with custom configuration.
+ * @param config SDL platform configuration
+ * @return Platform handle, or NULL on failure
+ */
+ZigGuiPlatform* zig_gui_sdl_platform_create_with_config(const ZigGuiSdlConfig* config);
+
+/**
+ * Create a framebuffer platform (embedded systems).
+ * @param config Framebuffer configuration
+ * @return Platform handle, or NULL on failure
+ */
+ZigGuiPlatform* zig_gui_framebuffer_platform_create(const ZigGuiFramebufferConfig* config);
+
+/**
+ * Create a headless platform (testing).
+ * Allows deterministic event injection for unit tests.
+ * @return Platform handle, or NULL on failure
+ */
+ZigGuiPlatform* zig_gui_headless_platform_create(void);
+
+/**
+ * Get the platform interface (vtable) for passing to App.
+ * @param platform Platform handle
+ * @return Platform interface for App to borrow
+ */
+ZigGuiPlatformInterface zig_gui_platform_interface(ZigGuiPlatform* platform);
+
+/**
+ * Inject an event into a headless platform (for testing).
+ * @param platform Headless platform handle
+ * @param event Event to inject
+ */
+void zig_gui_headless_inject_event(ZigGuiPlatform* platform, ZigGuiEvent event);
+
+/**
+ * Inject a click event into a headless platform (for testing).
+ * @param platform Headless platform handle
+ * @param x X coordinate
+ * @param y Y coordinate
+ */
+void zig_gui_headless_inject_click(ZigGuiPlatform* platform, int x, int y);
+
+/**
+ * Destroy a platform and release all OS resources.
+ * MUST be called after zig_gui_app_destroy().
+ * @param platform Platform handle (can be NULL)
+ */
+void zig_gui_platform_destroy(ZigGuiPlatform* platform);
+
+// =============================================================================
+// APPLICATION LIFECYCLE (Borrows Platform)
+// =============================================================================
+
+/**
+ * Create a new GUI application that borrows a platform.
+ * @param interface Platform interface (from zig_gui_platform_interface)
  * @param mode Execution mode for the application
  * @return Application handle, or NULL on failure
  */
-ZigGuiApp* zig_gui_app_create(ZigGuiExecutionMode mode);
+ZigGuiApp* zig_gui_app_create(ZigGuiPlatformInterface interface, ZigGuiExecutionMode mode);
 
 /**
  * Create a new GUI application with custom configuration.
+ * @param interface Platform interface (from zig_gui_platform_interface)
  * @param config Application configuration
  * @return Application handle, or NULL on failure
  */
-ZigGuiApp* zig_gui_app_create_with_config(const ZigGuiConfig* config);
+ZigGuiApp* zig_gui_app_create_with_config(ZigGuiPlatformInterface interface, const ZigGuiAppConfig* config);
 
 /**
- * Destroy a GUI application and free all resources.
+ * Destroy a GUI application.
+ * MUST be called before zig_gui_platform_destroy().
  * @param app Application handle (can be NULL)
  */
 void zig_gui_app_destroy(ZigGuiApp* app);
@@ -873,6 +974,7 @@ void zig_gui_text_size(ZigGuiApp* app, const char* text, float* width, float* he
 ```c
 #include "zig_gui.h"
 #include <stdio.h>
+#include <string.h>
 
 typedef struct {
     int counter;
@@ -881,7 +983,7 @@ typedef struct {
 
 void ui_function(ZigGuiApp* app, ZigGuiState* state, void* user_data) {
     AppState* app_state = (AppState*)user_data;
-    
+
     zig_gui_window_begin(app, "main_window", &(ZigGuiWindowConfig){
         .title = "My App",
         .width = 400,
@@ -889,43 +991,56 @@ void ui_function(ZigGuiApp* app, ZigGuiState* state, void* user_data) {
         .resizable = true,
         .centered = true
     });
-    
+
     // Display counter
     zig_gui_text_formatted(app, "Counter: %d", app_state->counter);
-    
+
     // Increment button
     if (zig_gui_button(app, "Increment")) {
         app_state->counter++;
     }
-    
+
     // Text input
     if (zig_gui_text_input(app, app_state->text_buffer, sizeof(app_state->text_buffer), NULL)) {
         printf("Text changed: %s\n", app_state->text_buffer);
     }
-    
+
     zig_gui_window_end(app);
 }
 
 int main() {
-    // Create application (event-driven for 0% idle CPU)
-    ZigGuiApp* app = zig_gui_app_create(ZIG_GUI_EVENT_DRIVEN);
-    if (!app) {
-        fprintf(stderr, "Failed to create GUI app\n");
+    // 1. Create platform first - owns window and OS resources
+    ZigGuiPlatform* platform = zig_gui_sdl_platform_create(800, 600, "My App");
+    if (!platform) {
+        fprintf(stderr, "Failed to create platform\n");
         return 1;
     }
-    
+
+    // 2. Create app - borrows platform via interface (vtable)
+    ZigGuiApp* app = zig_gui_app_create(
+        zig_gui_platform_interface(platform),
+        ZIG_GUI_EVENT_DRIVEN  // 0% idle CPU
+    );
+    if (!app) {
+        fprintf(stderr, "Failed to create GUI app\n");
+        zig_gui_platform_destroy(platform);
+        return 1;
+    }
+
     // Create state
     AppState app_state = { .counter = 0 };
     strcpy(app_state.text_buffer, "Hello, World!");
-    
-    // Run main loop
+
+    // 3. Run main loop
     ZigGuiError result = zig_gui_app_run(app, ui_function, &app_state);
     if (result != ZIG_GUI_OK) {
         fprintf(stderr, "GUI error: %s\n", zig_gui_error_string(result));
     }
-    
-    // Cleanup
+
+    // 4. Cleanup: app first, platform last
     zig_gui_app_destroy(app);
+    zig_gui_platform_destroy(platform);
+
     return result == ZIG_GUI_OK ? 0 : 1;
 }
 ```
@@ -945,23 +1060,23 @@ typedef struct {
 
 void game_ui(ZigGuiApp* app, ZigGuiState* state, void* user_data) {
     GameState* game = (GameState*)user_data;
-    
+
     // HUD overlay (no window)
     zig_gui_row_begin(app);
-    
+
     // Health bar
-    zig_gui_text("Health:");
+    zig_gui_text(app, "Health:");
     zig_gui_progress_bar(app, (float)game->health / 100.0f);
-    
-    // Mana bar  
-    zig_gui_text("Mana:");
+
+    // Mana bar
+    zig_gui_text(app, "Mana:");
     zig_gui_progress_bar(app, (float)game->mana / 100.0f);
-    
+
     // Score
     zig_gui_text_formatted(app, "Score: %d", game->score);
-    
+
     zig_gui_row_end(app);
-    
+
     // Inventory (only if open)
     if (game->inventory_open) {
         if (zig_gui_window_begin(app, "inventory", &(ZigGuiWindowConfig){
@@ -969,8 +1084,8 @@ void game_ui(ZigGuiApp* app, ZigGuiState* state, void* user_data) {
             .width = 300,
             .height = 200
         })) {
-            zig_gui_text("Your items here...");
-            
+            zig_gui_text(app, "Your items here...");
+
             if (zig_gui_button(app, "Close")) {
                 game->inventory_open = false;
             }
@@ -980,35 +1095,46 @@ void game_ui(ZigGuiApp* app, ZigGuiState* state, void* user_data) {
 }
 
 int main() {
-    // Initialize game engine
+    // Initialize game engine (owns window and renderer)
     GameEngine* engine = game_engine_init();
-    
+
+    // Platform wraps game engine's renderer
+    // Game engine provides the window/context, zig-gui just renders UI
+    ZigGuiPlatform* platform = zig_gui_custom_platform_create(
+        game_engine_get_renderer(engine)
+    );
+
     // Create GUI app in game loop mode
-    ZigGuiApp* gui = zig_gui_app_create(ZIG_GUI_GAME_LOOP);
-    
+    ZigGuiApp* gui = zig_gui_app_create(
+        zig_gui_platform_interface(platform),
+        ZIG_GUI_GAME_LOOP
+    );
+
     GameState game_state = { .health = 100, .mana = 50, .score = 0 };
-    
-    // Game loop
+
+    // Game loop - game owns the loop
     while (game_engine_is_running(engine)) {
         // Update game logic
         game_engine_update(engine);
-        
+
         // Update game state
         game_state.health = game_engine_get_player_health(engine);
         game_state.mana = game_engine_get_player_mana(engine);
         game_state.score = game_engine_get_score(engine);
-        
-        // Render game
+
+        // Render game world
         game_engine_render(engine);
-        
+
         // Render UI overlay (this takes <5% of frame time)
         zig_gui_app_update_frame(gui, game_ui, &game_state);
-        
+
         // Present frame
         game_engine_present(engine);
     }
-    
+
+    // Cleanup: app first, platform last
     zig_gui_app_destroy(gui);
+    zig_gui_platform_destroy(platform);
     game_engine_cleanup(engine);
     return 0;
 }
@@ -1029,50 +1155,59 @@ typedef struct {
 
 void sensor_ui(ZigGuiApp* app, ZigGuiState* state, void* user_data) {
     SensorData* sensors = (SensorData*)user_data;
-    
+
     // Simple grid layout for embedded display
     zig_gui_column_begin(app);
-    
+
     // Temperature display
     zig_gui_text_formatted(app, "Temp: %.1f°C", sensors->temperature);
-    
+
     // Humidity display
     zig_gui_text_formatted(app, "Humidity: %.1f%%", sensors->humidity);
-    
+
     // Fan control
     if (zig_gui_checkbox(app, "Fan", &sensors->fan_on)) {
         teensy_set_fan(sensors->fan_on);
     }
-    
+
     // Brightness control
     if (zig_gui_slider_int(app, &sensors->brightness, 0, 255)) {
         teensy_set_brightness(sensors->brightness);
     }
-    
+
     zig_gui_column_end(app);
 }
 
 int main() {
     // Initialize Teensy hardware
     teensy_init();
-    
-    // Create minimal GUI (uses <32KB RAM)
-    ZigGuiConfig config = {
-        .mode = ZIG_GUI_MINIMAL,
-        .backend = ZIG_GUI_BACKEND_FRAMEBUFFER,
-        .max_memory_kb = 32,
-        .platform_config = &teensy_display_config
+
+    // 1. Create framebuffer platform (owns display buffer)
+    ZigGuiFramebufferConfig fb_config = {
+        .buffer = teensy_get_framebuffer(),
+        .width = 320,
+        .height = 240,
+        .color_depth = 16
     };
-    
-    ZigGuiApp* app = zig_gui_app_create_with_config(&config);
-    
-    SensorData sensors = { 
+    ZigGuiPlatform* platform = zig_gui_framebuffer_platform_create(&fb_config);
+
+    // 2. Create minimal GUI app (uses <32KB RAM)
+    ZigGuiAppConfig app_config = {
+        .mode = ZIG_GUI_MINIMAL,
+        .max_memory_kb = 32
+    };
+    ZigGuiApp* app = zig_gui_app_create_with_config(
+        zig_gui_platform_interface(platform),
+        &app_config
+    );
+
+    SensorData sensors = {
         .temperature = 22.5f,
         .humidity = 45.0f,
         .fan_on = false,
         .brightness = 128
     };
-    
+
     // Main loop (event-driven, wakes only on input)
     while (true) {
         // Read sensors (only when needed)
@@ -1080,18 +1215,20 @@ int main() {
             sensors.temperature = teensy_read_temperature();
             sensors.humidity = teensy_read_humidity();
         }
-        
+
         // Wait for input event (sleeps to save power)
         ZigGuiEvent event = zig_gui_app_wait_event(app);
-        
+
         if (event.type == ZIG_GUI_EVENT_REDRAW_NEEDED) {
             zig_gui_begin_frame(app);
             sensor_ui(app, NULL, &sensors);
             zig_gui_end_frame(app);
         }
     }
-    
+
+    // Cleanup: app first, platform last
     zig_gui_app_destroy(app);
+    zig_gui_platform_destroy(platform);
     return 0;
 }
 ```
@@ -1104,13 +1241,23 @@ The C API is designed to be easily wrapped by other languages:
 
 ```python
 import ctypes
-from ctypes import c_char_p, c_int, c_bool, c_float, c_void_p, CFUNCTYPE
+from ctypes import c_char_p, c_int, c_bool, c_float, c_void_p, CFUNCTYPE, Structure
 
 # Load library
 zig_gui = ctypes.CDLL('./libzig_gui.so')
 
+# Platform interface struct
+class PlatformInterface(Structure):
+    _fields_ = [("ptr", c_void_p), ("vtable", c_void_p)]
+
 # Define function signatures
-zig_gui.zig_gui_app_create.argtypes = [c_int]
+zig_gui.zig_gui_sdl_platform_create.argtypes = [c_int, c_int, c_char_p]
+zig_gui.zig_gui_sdl_platform_create.restype = c_void_p
+
+zig_gui.zig_gui_platform_interface.argtypes = [c_void_p]
+zig_gui.zig_gui_platform_interface.restype = PlatformInterface
+
+zig_gui.zig_gui_app_create.argtypes = [PlatformInterface, c_int]
 zig_gui.zig_gui_app_create.restype = c_void_p
 
 zig_gui.zig_gui_button.argtypes = [c_void_p, c_char_p]
@@ -1119,16 +1266,37 @@ zig_gui.zig_gui_button.restype = c_bool
 # UI function type
 UIFunction = CFUNCTYPE(None, c_void_p, c_void_p, c_void_p)
 
+class Platform:
+    def __init__(self, width=800, height=600, title="My App"):
+        self._platform = zig_gui.zig_gui_sdl_platform_create(width, height, title.encode('utf-8'))
+
+    def interface(self):
+        return zig_gui.zig_gui_platform_interface(self._platform)
+
+    def destroy(self):
+        zig_gui.zig_gui_platform_destroy(self._platform)
+
 class App:
-    def __init__(self, mode=0):  # 0 = EVENT_DRIVEN
-        self.app = zig_gui.zig_gui_app_create(mode)
-    
+    def __init__(self, platform, mode=0):  # 0 = EVENT_DRIVEN
+        self._platform = platform  # Keep reference
+        self._app = zig_gui.zig_gui_app_create(platform.interface(), mode)
+
     def button(self, text):
-        return zig_gui.zig_gui_button(self.app, text.encode('utf-8'))
-    
+        return zig_gui.zig_gui_button(self._app, text.encode('utf-8'))
+
     def run(self, ui_func):
         c_ui_func = UIFunction(ui_func)
-        zig_gui.zig_gui_app_run(self.app, c_ui_func, None)
+        zig_gui.zig_gui_app_run(self._app, c_ui_func, None)
+
+    def destroy(self):
+        zig_gui.zig_gui_app_destroy(self._app)
+
+# Usage:
+# platform = Platform(800, 600, "My App")
+# app = App(platform)
+# app.run(my_ui)
+# app.destroy()      # App first
+# platform.destroy() # Platform last
 ```
 
 ### Go (cgo example)
@@ -1145,14 +1313,38 @@ extern void go_ui_function_wrapper(ZigGuiApp* app, ZigGuiState* state, void* use
 import "C"
 import "unsafe"
 
-type App struct {
-    cApp *C.ZigGuiApp
-    uiFunc func(*App)
+type Platform struct {
+    cPlatform *C.ZigGuiPlatform
 }
 
-func NewApp(mode int) *App {
+type App struct {
+    cApp     *C.ZigGuiApp
+    platform *Platform // Keep reference
+    uiFunc   func(*App)
+}
+
+// NewPlatform creates a platform that owns OS resources
+func NewPlatform(width, height int, title string) *Platform {
+    cTitle := C.CString(title)
+    defer C.free(unsafe.Pointer(cTitle))
+    return &Platform{
+        cPlatform: C.zig_gui_sdl_platform_create(C.int(width), C.int(height), cTitle),
+    }
+}
+
+func (p *Platform) Interface() C.ZigGuiPlatformInterface {
+    return C.zig_gui_platform_interface(p.cPlatform)
+}
+
+func (p *Platform) Destroy() {
+    C.zig_gui_platform_destroy(p.cPlatform)
+}
+
+// NewApp creates an app that borrows the platform
+func NewApp(platform *Platform, mode int) *App {
     return &App{
-        cApp: C.zig_gui_app_create(C.int(mode)),
+        cApp:     C.zig_gui_app_create(platform.Interface(), C.ZigGuiExecutionMode(mode)),
+        platform: platform,
     }
 }
 
@@ -1167,11 +1359,22 @@ func (a *App) Run(uiFunc func(*App)) {
     C.zig_gui_app_run(a.cApp, C.ZigGuiUIFunction(C.go_ui_function_wrapper), unsafe.Pointer(a))
 }
 
+func (a *App) Destroy() {
+    C.zig_gui_app_destroy(a.cApp)
+}
+
 //export go_ui_function_wrapper
 func go_ui_function_wrapper(app *C.ZigGuiApp, state *C.ZigGuiState, userData unsafe.Pointer) {
     goApp := (*App)(userData)
     goApp.uiFunc(goApp)
 }
+
+// Usage:
+// platform := NewPlatform(800, 600, "My App")
+// defer platform.Destroy()  // Platform destroyed last
+// app := NewApp(platform, EVENT_DRIVEN)
+// defer app.Destroy()       // App destroyed first
+// app.Run(myUI)
 ```
 
 ## ABI Stability Guarantees
