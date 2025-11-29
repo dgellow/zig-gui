@@ -94,7 +94,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     // Desktop app: 0% CPU when idle, instant response
-    var app = try gui.App.init(gpa.allocator(), .event_driven);
+    // App is generic over your state type for type-safe UI functions
+    var app = try gui.App(TodoState).init(gpa.allocator(), .{ .mode = .event_driven });
     defer app.deinit();
 
     var state = TodoState{};
@@ -108,9 +109,10 @@ pub fn main() !void {
 
 ```zig
 // Same API, different execution strategies
-var desktop_app = try App.init(.event_driven);  // 0% idle CPU
-var game_app = try App.init(.game_loop);        // 60+ FPS  
-var embedded_app = try App.init(.minimal);      // <32KB RAM
+// App(State) is generic over your state type
+var desktop_app = try App(MyState).init(allocator, .{ .mode = .event_driven });  // 0% idle CPU
+var game_app = try App(MyState).init(allocator, .{ .mode = .game_loop });        // 60+ FPS
+var embedded_app = try App(MyState).init(allocator, .{ .mode = .minimal });      // <32KB RAM
 ```
 
 ### Event-Driven Mode (Desktop Apps)
@@ -202,11 +204,11 @@ fn EmailClient(gui: *GUI, state: *EmailState) !void {
 }
 ```
 
-### 🔥 Hot Reload  
+### 🔥 Hot Reload
 Change code, see results instantly:
 
 ```zig
-var app = try App.init(.{
+var app = try App(MyState).init(allocator, .{
     .mode = .event_driven,
     .hot_reload = true, // 🔥 Magic happens here
 });
@@ -540,10 +542,10 @@ fn myApp(gui: *GUI, state: *AppState) !void {
 }
 
 // Framework chooses execution strategy based on platform
-var desktop = try App.init(.event_driven);  // 0% idle CPU
-var game = try App.init(.game_loop);        // 120+ FPS
-var embedded = try App.init(.minimal);       // <32KB RAM
-var server = try App.init(.server_side);     // Headless rendering
+var desktop = try App(AppState).init(allocator, .{ .mode = .event_driven });   // 0% idle CPU
+var game = try App(AppState).init(allocator, .{ .mode = .game_loop });         // 120+ FPS
+var embedded = try App(AppState).init(allocator, .{ .mode = .minimal });       // <32KB RAM
+var server = try App(AppState).init(allocator, .{ .mode = .server_side });     // Headless rendering
 ```
 
 **Same code. Different execution. Optimal everywhere.**
