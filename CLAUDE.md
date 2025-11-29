@@ -166,26 +166,27 @@ fn EmailApp(gui: *GUI, state: *EmailState) !void {
 ```
 src/
 ├── root.zig               # Public API exports
-├── app.zig                # App context, execution modes
-├── gui.zig                # Core GUI context (wraps zlay)
-├── state.zig              # Reactive state management
+├── app.zig                # App context, execution modes, typed state
+├── gui.zig                # Core GUI context (subsystems)
+├── tracked.zig            # Tracked Signals state management
 ├── events.zig             # Event system (input → UI events)
 ├── renderer.zig           # Renderer abstraction
-├── hot_reload.zig         # Development tools
+├── layout.zig             # Flexbox layout engine
+├── style.zig              # Style system
+├── animation.zig          # Animation system
+├── asset.zig              # Asset loading
 ├── platforms/             # Platform-specific backends
-│   ├── sdl.zig           # SDL integration
-│   ├── glfw.zig          # GLFW integration  
-│   ├── embedded.zig      # Embedded platforms
-│   └── web.zig           # WebAssembly target
+│   └── sdl.zig           # SDL integration (0% idle CPU)
 ├── components/            # High-level UI components
-│   ├── button.zig
-│   ├── text_input.zig
-│   ├── data_table.zig
-│   └── charts.zig
-└── c_api/                 # World-class C API
-    ├── zig_gui.h         # C header
-    ├── core.zig          # Core C bindings
-    └── components.zig    # Component C bindings
+│   ├── view.zig          # Base view component
+│   ├── container.zig     # Container component
+│   ├── box.zig           # Box component
+│   └── ...               # More components
+└── core/                  # Core types
+    ├── geometry.zig      # Rect, Point, Size
+    ├── color.zig         # Color type
+    ├── paint.zig         # Paint/brush types
+    └── ...               # More core types
 ```
 
 ### State Management Philosophy

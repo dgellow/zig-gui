@@ -1,32 +1,143 @@
-// Core GUI types
+// zig-gui: The Revolutionary UI Library
+//
+// Solving the impossible trinity of GUI development:
+// - Performance: 0% idle CPU, 120+ FPS
+// - Developer Experience: Immediate-mode simplicity with hot reload
+// - Universality: Embedded to desktop with the same code
+//
+// State Management: Uses Tracked Signals (4 bytes per field, O(1) writes)
+// See docs/STATE_MANAGEMENT.md for design rationale.
+
+// =============================================================================
+// Core Application Types
+// =============================================================================
+
+/// App with typed state and hybrid execution modes
+pub const App = @import("app.zig").App;
+
+/// Application configuration
+pub const AppConfig = @import("app.zig").AppConfig;
+
+/// Execution modes: event_driven, game_loop, minimal, server_side
+pub const ExecutionMode = @import("app.zig").ExecutionMode;
+
+/// Performance statistics
+pub const PerformanceStats = @import("app.zig").PerformanceStats;
+
+/// Event types and data
+pub const Event = @import("app.zig").Event;
+pub const EventType = @import("app.zig").EventType;
+
+// =============================================================================
+// GUI Types
+// =============================================================================
+
+/// Core GUI context
 pub const GUI = @import("gui.zig").GUI;
+
+/// GUI configuration
 pub const GUIConfig = @import("gui.zig").GUIConfig;
-pub const bind = @import("gui.zig").bind;
+
+/// Renderer interface for custom backends
 pub const RendererInterface = @import("renderer.zig").RendererInterface;
 
-// Geometry and rendering primitives
+// =============================================================================
+// State Management - Tracked Signals
+// =============================================================================
+//
+// Tracked(T) wraps any value with a version counter for reactive state.
+// This is the recommended way to manage state in zig-gui applications.
+//
+// Example:
+// ```zig
+// const AppState = struct {
+//     counter: Tracked(i32) = .{ .value = 0 },
+//     name: Tracked([]const u8) = .{ .value = "World" },
+// };
+//
+// fn myUI(gui: *GUI, state: *AppState) !void {
+//     try gui.text("Counter: {}", .{state.counter.get()});
+//     if (try gui.button("Increment")) {
+//         state.counter.set(state.counter.get() + 1);
+//     }
+// }
+// ```
+//
+// Performance characteristics:
+// - Memory: 4 bytes per Tracked field (version counter)
+// - Write: O(1) - just increment version
+// - Read: O(1) - direct field access
+// - Change detection: O(N) where N = field count (NOT data size)
+//
+// See docs/STATE_MANAGEMENT.md for full design rationale.
+
+const tracked = @import("tracked.zig");
+
+/// Tracked value wrapper for reactive state management
+pub const Tracked = tracked.Tracked;
+
+/// Compute combined version of all Tracked fields (O(N) where N = field count)
+pub const computeStateVersion = tracked.computeStateVersion;
+
+/// Check if any Tracked field changed since last check
+pub const stateChanged = tracked.stateChanged;
+
+/// Find which specific fields changed (for partial updates)
+pub const findChangedFields = tracked.findChangedFields;
+
+/// Capture current versions of all Tracked fields
+pub const captureFieldVersions = tracked.captureFieldVersions;
+
+// =============================================================================
+// Geometry and Rendering Primitives
+// =============================================================================
+
 pub const Rect = @import("core/geometry.zig").Rect;
 pub const Point = @import("core/geometry.zig").Point;
-pub const Paint = @import("core/paint.zig").Paint;
-pub const ImageHandle = @import("core/image.zig").ImageHandle;
-pub const Path = @import("core/path.zig").Path;
-pub const ImageFormat = @import("core/image.zig").ImageFormat;
-pub const FontHandle = @import("core/font.zig").FontHandle;
-pub const Transform = @import("core/transform.zig").Transform;
-pub const Color = @import("core/color.zig").Color;
+pub const Size = @import("core/geometry.zig").Size;
 pub const EdgeInsets = @import("core/geometry.zig").EdgeInsets;
 
-// State management - Tracked Signals
-// See docs/STATE_MANAGEMENT.md for design rationale
-const tracked = @import("tracked.zig");
-pub const Tracked = tracked.Tracked;
-pub const computeStateVersion = tracked.computeStateVersion;
-pub const stateChanged = tracked.stateChanged;
-pub const findChangedFields = tracked.findChangedFields;
-pub const captureFieldVersions = tracked.captureFieldVersions;
+pub const Paint = @import("core/paint.zig").Paint;
+pub const Color = @import("core/color.zig").Color;
+pub const Path = @import("core/path.zig").Path;
+pub const Transform = @import("core/transform.zig").Transform;
+
+pub const ImageHandle = @import("core/image.zig").ImageHandle;
+pub const ImageFormat = @import("core/image.zig").ImageFormat;
+pub const FontHandle = @import("core/font.zig").FontHandle;
+
+// =============================================================================
+// Components
+// =============================================================================
 
 pub const components = struct {
     pub const View = @import("components/view.zig").View;
     pub const Container = @import("components/container.zig").Container;
     pub const Box = @import("components/box.zig").Box;
+};
+
+// =============================================================================
+// Layout
+// =============================================================================
+
+pub const layout = struct {
+    pub const LayoutEngine = @import("layout.zig").LayoutEngine;
+    pub const LayoutParams = @import("layout.zig").LayoutParams;
+    pub const FlexDirection = @import("layout.zig").FlexDirection;
+    pub const JustifyContent = @import("layout.zig").JustifyContent;
+    pub const AlignItems = @import("layout.zig").AlignItems;
+    pub const Alignment = @import("layout.zig").Alignment;
+};
+
+// =============================================================================
+// Events
+// =============================================================================
+
+pub const events = struct {
+    pub const EventManager = @import("events.zig").EventManager;
+    pub const UIEvent = @import("events.zig").UIEvent;
+    pub const InputEvent = @import("events.zig").InputEvent;
+    pub const Key = @import("events.zig").Key;
+    pub const MouseButton = @import("events.zig").MouseButton;
+    pub const KeyModifiers = @import("events.zig").KeyModifiers;
 };
