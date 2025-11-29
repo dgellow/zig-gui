@@ -40,7 +40,7 @@ pub const GUIConfig = struct {
 
 /// Main GUI manager that coordinates all subsystems
 ///
-/// State Management: Use Tracked(T) for reactive state instead of the legacy StateStore.
+/// State Management: Use Tracked(T) for reactive state.
 /// See docs/STATE_MANAGEMENT.md for the design rationale.
 ///
 /// Example:
@@ -106,15 +106,15 @@ pub const GUI = struct {
     /// Text formatting buffer (for fmt args)
     im_text_buffer: [1024]u8 = undefined,
 
-    /// Initialize the GUI system with a renderer
-    pub fn init(allocator: std.mem.Allocator, renderer: *RendererInterface, config: GUIConfig) !*GUI {
-        return initInternal(allocator, renderer, config);
+    /// Initialize the GUI system (headless mode, no renderer)
+    /// Use initWithRenderer() if you have a platform renderer ready.
+    pub fn init(allocator: std.mem.Allocator, config: GUIConfig) !*GUI {
+        return initInternal(allocator, null, config);
     }
 
-    /// Initialize the GUI system without a renderer (for headless/testing)
-    /// State management uses Tracked(T) - no StateStore needed
-    pub fn initWithoutStateStore(allocator: std.mem.Allocator, config: GUIConfig) !*GUI {
-        return initInternal(allocator, null, config);
+    /// Initialize the GUI system with a renderer
+    pub fn initWithRenderer(allocator: std.mem.Allocator, renderer: *RendererInterface, config: GUIConfig) !*GUI {
+        return initInternal(allocator, renderer, config);
     }
 
     /// Internal initialization
@@ -248,20 +248,6 @@ pub const GUI = struct {
         }
 
         self.in_frame = false;
-    }
-
-    /// Process input, update state, calculate layout, and render a frame (legacy)
-    pub fn frame(self: *GUI, dt: f32) !void {
-        // Skip if no root view
-        if (self.root_view == null) return;
-
-        // Update animations if enabled
-        if (self.animation_system) |animation_system| {
-            animation_system.update(dt);
-        }
-
-        try self.beginFrame();
-        try self.endFrame();
     }
 
     // =========================================================================
@@ -616,7 +602,7 @@ pub const GUI = struct {
 
 test "GUI immediate-mode ID generation" {
     // Test that IDs are unique for different labels
-    const gui = try GUI.initWithoutStateStore(std.testing.allocator, .{});
+    const gui = try GUI.init(std.testing.allocator, .{});
     defer gui.deinit();
 
     const id1 = gui.generateId("button1");

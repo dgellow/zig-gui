@@ -95,9 +95,6 @@ pub fn UIFunction(comptime State: type) type {
     return *const fn (gui: *GUI, state: *State) anyerror!void;
 }
 
-/// Legacy untyped UI function for backward compatibility
-pub const UntypedUIFunction = *const fn (gui: *GUI, state: ?*anyopaque) anyerror!void;
-
 /// The revolutionary App structure that enables hybrid execution
 ///
 /// Features:
@@ -144,8 +141,8 @@ pub fn App(comptime State: type) type {
                 .dpi_scale = config.dpi_scale,
             };
 
-            // Initialize GUI (without legacy StateStore)
-            const gui = try GUI.initWithoutStateStore(allocator, gui_config);
+            // Initialize GUI (headless mode - platform can set renderer later)
+            const gui = try GUI.init(allocator, gui_config);
             errdefer gui.deinit();
 
             app.* = .{
