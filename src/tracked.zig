@@ -202,6 +202,144 @@ pub fn captureFieldVersions(state: anytype, versions: []u32) void {
 }
 
 // ============================================================================
+// Reactive(T) - O(1) Global Change Detection (Option E)
+// ============================================================================
+
+/// Reactive state wrapper that enables O(1) global change detection.
+///
+/// While Tracked(T) provides O(N) change detection (where N = field count),
+/// Reactive(T) adds a single global version counter that's incremented
+/// on ANY field change, enabling O(1) "did anything change?" checks.
+///
+/// ## Usage
+///
+/// ```zig
+/// // Define state with Tracked fields
+/// const InnerState = struct {
+///     counter: Tracked(i32) = .{ .value = 0 },
+///     name: Tracked([]const u8) = .{ .value = "World" },
+/// };
+///
+/// // Wrap with Reactive for O(1) change detection
+/// var state = Reactive(InnerState).init();
+///
+/// // Access values via inner
+/// const count = state.inner.counter.get();
+///
+/// // Set values via Reactive.set() to bump global version
+/// state.set(.counter, 42);
+///
+/// // O(1) change detection
+/// if (state.changed(&last_version)) {
+///     // Something changed, re-render
+/// }
+/// ```
+///
+/// ## Performance
+///
+/// - Memory: sizeof(T) + 8 bytes (global version u64)
+/// - Write: O(1) - increment both field and global versions
+/// - Global change check: O(1) - single comparison
+/// - Per-field change check: Still available via inner.field.version()
+///
+/// ## Migration from Tracked
+///
+/// Reactive is a non-breaking upgrade from plain Tracked:
+/// 1. Wrap your state type: `Reactive(MyState).init()`
+/// 2. Change `state.field.set(v)` to `state.set(.field, v)`
+/// 3. Change `stateChanged(&state, &v)` to `state.changed(&v)`
+///
+pub fn Reactive(comptime Inner: type) type {
+    return struct {
+        /// The wrapped state struct with Tracked fields
+        inner: Inner = .{},
+
+        /// Global version counter - incremented on ANY field change
+        /// This enables O(1) "did anything change?" checks
+        _global_version: u64 = 0,
+
+        const Self = @This();
+
+        /// Initialize with default values
+        pub fn init() Self {
+            return .{};
+        }
+
+        /// Initialize with specific inner state
+        pub fn initWith(inner_state: Inner) Self {
+            return .{ .inner = inner_state };
+        }
+
+        /// Set a Tracked field value, incrementing both field and global versions.
+        ///
+        /// Example:
+        /// ```zig
+        /// state.set(.counter, 42);
+        /// state.set(.name, "Hello");
+        /// ```
+        pub fn set(self: *Self, comptime field: std.meta.FieldEnum(Inner), value: anytype) void {
+            const field_ptr = &@field(self.inner, @tagName(field));
+
+            // Set the value (increments field._v)
+            field_ptr.set(value);
+
+            // Also increment global version
+            self._global_version +%= 1;
+        }
+
+        /// Get a Tracked field value (shortcut for inner.field.get())
+        pub fn get(self: *const Self, comptime field: std.meta.FieldEnum(Inner)) FieldValueType(field) {
+            const field_ptr = &@field(self.inner, @tagName(field));
+            return field_ptr.get();
+        }
+
+        /// Get mutable pointer to field value, incrementing both versions
+        pub fn ptr(self: *Self, comptime field: std.meta.FieldEnum(Inner)) FieldPtrType(field) {
+            const field_ptr = &@field(self.inner, @tagName(field));
+            self._global_version +%= 1;
+            return field_ptr.ptr();
+        }
+
+        /// Check if ANY field changed since last check (O(1))
+        ///
+        /// This is the key advantage of Reactive over plain Tracked:
+        /// - Tracked: O(N) to check all fields
+        /// - Reactive: O(1) single comparison
+        pub fn changed(self: *const Self, last_version: *u64) bool {
+            if (self._global_version != last_version.*) {
+                last_version.* = self._global_version;
+                return true;
+            }
+            return false;
+        }
+
+        /// Get current global version
+        pub fn globalVersion(self: *const Self) u64 {
+            return self._global_version;
+        }
+
+        // Helper to get the value type of a Tracked field
+        fn FieldValueType(comptime field: std.meta.FieldEnum(Inner)) type {
+            const field_info = std.meta.fields(Inner)[@intFromEnum(field)];
+            const FieldType = field_info.type;
+            // Extract T from Tracked(T)
+            return @TypeOf(@as(FieldType, undefined).value);
+        }
+
+        // Helper to get the pointer type for a Tracked field
+        fn FieldPtrType(comptime field: std.meta.FieldEnum(Inner)) type {
+            const ValueType = FieldValueType(field);
+            return *ValueType;
+        }
+    };
+}
+
+/// Check if a Reactive state changed (convenience function)
+pub fn reactiveChanged(state: anytype, last_version: *u64) bool {
+    return state.changed(last_version);
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -329,4 +467,90 @@ test "Tracked with slice" {
     name.set("world");
     try std.testing.expectEqualStrings("world", name.get());
     try std.testing.expectEqual(@as(u32, 1), name.version());
+}
+
+// ============================================================================
+// Reactive Tests
+// ============================================================================
+
+test "Reactive basic operations" {
+    const InnerState = struct {
+        counter: Tracked(i32) = .{ .value = 0 },
+        name: Tracked([]const u8) = .{ .value = "test" },
+    };
+
+    var state = Reactive(InnerState).init();
+
+    // Initial values
+    try std.testing.expectEqual(@as(i32, 0), state.get(.counter));
+    try std.testing.expectEqualStrings("test", state.get(.name));
+    try std.testing.expectEqual(@as(u64, 0), state.globalVersion());
+
+    // Set via Reactive.set()
+    state.set(.counter, 42);
+    try std.testing.expectEqual(@as(i32, 42), state.get(.counter));
+    try std.testing.expectEqual(@as(u64, 1), state.globalVersion());
+
+    // Set another field
+    state.set(.name, "hello");
+    try std.testing.expectEqualStrings("hello", state.get(.name));
+    try std.testing.expectEqual(@as(u64, 2), state.globalVersion());
+}
+
+test "Reactive O(1) change detection" {
+    const InnerState = struct {
+        a: Tracked(i32) = .{ .value = 0 },
+        b: Tracked(i32) = .{ .value = 0 },
+        c: Tracked(i32) = .{ .value = 0 },
+    };
+
+    var state = Reactive(InnerState).init();
+    var last_version: u64 = 0;
+
+    // Initially no change
+    try std.testing.expect(!state.changed(&last_version));
+
+    // Any field change is detected in O(1)
+    state.set(.b, 100);
+    try std.testing.expect(state.changed(&last_version));
+
+    // No more changes
+    try std.testing.expect(!state.changed(&last_version));
+
+    // Multiple changes still O(1) to detect
+    state.set(.a, 1);
+    state.set(.c, 2);
+    try std.testing.expect(state.changed(&last_version));
+}
+
+test "Reactive inner access" {
+    const InnerState = struct {
+        counter: Tracked(i32) = .{ .value = 0 },
+    };
+
+    var state = Reactive(InnerState).init();
+
+    // Can still access inner directly for read
+    try std.testing.expectEqual(@as(i32, 0), state.inner.counter.get());
+    try std.testing.expectEqual(@as(u32, 0), state.inner.counter.version());
+
+    // Set via Reactive
+    state.set(.counter, 42);
+
+    // Field version is also updated
+    try std.testing.expectEqual(@as(u32, 1), state.inner.counter.version());
+}
+
+test "Reactive ptr mutation" {
+    const Item = struct { x: i32, y: i32 };
+    const InnerState = struct {
+        item: Tracked(Item) = .{ .value = .{ .x = 0, .y = 0 } },
+    };
+
+    var state = Reactive(InnerState).init();
+
+    // Modify via ptr (bumps both versions)
+    state.ptr(.item).x = 10;
+    try std.testing.expectEqual(@as(i32, 10), state.get(.item).x);
+    try std.testing.expectEqual(@as(u64, 1), state.globalVersion());
 }

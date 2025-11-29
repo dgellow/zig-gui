@@ -69,6 +69,15 @@ pub const RendererInterface = @import("renderer.zig").RendererInterface;
 // - Read: O(1) - direct field access
 // - Change detection: O(N) where N = field count (NOT data size)
 //
+// For O(1) global change detection, use Reactive(T) wrapper:
+// ```zig
+// var state = Reactive(MyState).init();
+// state.set(.counter, 42);  // O(1) write
+// if (state.changed(&v)) {  // O(1) check!
+//     // re-render
+// }
+// ```
+//
 // See docs/STATE_MANAGEMENT.md for full design rationale.
 
 const tracked = @import("tracked.zig");
@@ -76,10 +85,15 @@ const tracked = @import("tracked.zig");
 /// Tracked value wrapper for reactive state management
 pub const Tracked = tracked.Tracked;
 
+/// Reactive wrapper for O(1) global change detection (Option E optimization)
+/// Use when you need fastest possible "did anything change?" checks
+pub const Reactive = tracked.Reactive;
+
 /// Compute combined version of all Tracked fields (O(N) where N = field count)
 pub const computeStateVersion = tracked.computeStateVersion;
 
-/// Check if any Tracked field changed since last check
+/// Check if any Tracked field changed since last check (O(N))
+/// For O(1), use Reactive(T).changed() instead
 pub const stateChanged = tracked.stateChanged;
 
 /// Find which specific fields changed (for partial updates)
@@ -87,6 +101,9 @@ pub const findChangedFields = tracked.findChangedFields;
 
 /// Capture current versions of all Tracked fields
 pub const captureFieldVersions = tracked.captureFieldVersions;
+
+/// Check if a Reactive state changed (O(1))
+pub const reactiveChanged = tracked.reactiveChanged;
 
 // =============================================================================
 // Geometry and Rendering Primitives
