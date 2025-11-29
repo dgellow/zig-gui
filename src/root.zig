@@ -28,6 +28,10 @@ pub const PerformanceStats = @import("app.zig").PerformanceStats;
 pub const Event = @import("app.zig").Event;
 pub const EventType = @import("app.zig").EventType;
 
+/// Platform interface (vtable for runtime platform dispatch)
+/// Enables C API compatibility and runtime platform selection
+pub const PlatformInterface = @import("app.zig").PlatformInterface;
+
 /// Headless platform for testing and server-side rendering
 pub const HeadlessPlatform = @import("app.zig").HeadlessPlatform;
 
@@ -169,4 +173,7 @@ pub const events = struct {
 pub const platforms = struct {
     /// SDL platform backend - true 0% idle CPU via SDL_WaitEvent()
     pub const SdlPlatform = @import("platforms/sdl.zig").SdlPlatform;
+
+    /// SDL platform configuration (window settings)
+    pub const SdlConfig = @import("platforms/sdl.zig").SdlConfig;
 };

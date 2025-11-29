@@ -29,11 +29,6 @@ pub const ExecutionMode = enum {
 pub const AppConfig = struct {
     mode: ExecutionMode = .event_driven,
 
-    /// Window configuration
-    window_width: u32 = 800,
-    window_height: u32 = 600,
-    window_title: []const u8 = "zig-gui Application",
-
     /// Performance tuning
     target_fps: u32 = 60,
 
@@ -43,6 +38,9 @@ pub const AppConfig = struct {
 
     /// Initial DPI scale factor
     dpi_scale: f32 = 1.0,
+
+    /// Development features
+    hot_reload: bool = false,
 };
 
 /// Event types that can trigger UI updates
@@ -59,6 +57,10 @@ pub const Event = struct {
     type: EventType,
     data: ?*anyopaque = null,
     timestamp: u64 = 0,
+
+    pub fn requiresRedraw(self: Event) bool {
+        return self.type == .redraw_needed or self.type == .input;
+    }
 };
 
 /// UI function signature for rendering the interface
@@ -67,15 +69,82 @@ pub fn UIFunction(comptime State: type) type {
 }
 
 // ============================================================================
+// PlatformInterface - Runtime vtable for platform dispatch
+// ============================================================================
+
+/// Platform interface (vtable for runtime dispatch)
+///
+/// This enables runtime platform selection, which is essential for:
+/// - C API compatibility (can't use comptime from C)
+/// - Game engine integration (platform determined at runtime)
+/// - Testing (inject HeadlessPlatform without recompilation)
+///
+/// Example:
+/// ```zig
+/// // Platform created first - owns OS resources
+/// var platform = try SdlPlatform.init(allocator, config);
+/// defer platform.deinit();
+///
+/// // App borrows platform via interface (vtable)
+/// var app = try App(MyState).init(allocator, platform.interface(), .{});
+/// defer app.deinit();
+///
+/// try app.run(myUI, &state);
+/// ```
+pub const PlatformInterface = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// Wait for next event (blocking) - achieves 0% idle CPU
+        waitEvent: *const fn (ptr: *anyopaque) anyerror!Event,
+
+        /// Poll for event (non-blocking) - for game loop mode
+        pollEvent: *const fn (ptr: *anyopaque) ?Event,
+
+        /// Present/swap buffers
+        present: *const fn (ptr: *anyopaque) void,
+    };
+
+    /// Wait for event via vtable dispatch
+    pub fn waitEvent(self: PlatformInterface) !Event {
+        return self.vtable.waitEvent(self.ptr);
+    }
+
+    /// Poll for event via vtable dispatch
+    pub fn pollEvent(self: PlatformInterface) ?Event {
+        return self.vtable.pollEvent(self.ptr);
+    }
+
+    /// Present frame via vtable dispatch
+    pub fn present(self: PlatformInterface) void {
+        self.vtable.present(self.ptr);
+    }
+};
+
+// ============================================================================
 // HeadlessPlatform - For testing and server-side rendering
 // ============================================================================
 
 /// Headless platform for testing - no window, no real events
 ///
-/// Returns quit after max_frames, useful for tests.
+/// Provides deterministic event injection for unit tests.
+/// Returns quit after max_frames, useful for automated tests.
+///
+/// Example:
+/// ```zig
+/// var headless = HeadlessPlatform.init();
+/// var app = try App(TestState).init(allocator, headless.interface(), .{});
+/// defer app.deinit();
+///
+/// headless.injectClick(100, 50);  // Deterministic event injection
+/// try app.run(testUI, &state);
+/// ```
 pub const HeadlessPlatform = struct {
     frame_count: u32 = 0,
     max_frames: u32 = 1,
+    injected_events: std.BoundedArray(Event, 64) = .{},
+    render_calls: u32 = 0,
 
     pub fn init() HeadlessPlatform {
         return .{};
@@ -83,8 +152,47 @@ pub const HeadlessPlatform = struct {
 
     pub fn deinit(_: *HeadlessPlatform) void {}
 
-    /// Returns redraw_needed until max_frames, then quit
-    pub fn waitForEvent(self: *HeadlessPlatform) !Event {
+    /// Get the platform interface (vtable) for passing to App
+    pub fn interface(self: *HeadlessPlatform) PlatformInterface {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    /// Inject an event for testing
+    pub fn injectEvent(self: *HeadlessPlatform, event: Event) void {
+        self.injected_events.append(event) catch {};
+    }
+
+    /// Inject a click event at specific coordinates
+    pub fn injectClick(self: *HeadlessPlatform, x: i32, y: i32) void {
+        _ = x;
+        _ = y;
+        self.injectEvent(.{ .type = .input });
+    }
+
+    /// Inject a redraw event
+    pub fn injectRedraw(self: *HeadlessPlatform) void {
+        self.injectEvent(.{ .type = .redraw_needed });
+    }
+
+    // VTable implementation
+    const vtable = PlatformInterface.VTable{
+        .waitEvent = waitEventImpl,
+        .pollEvent = pollEventImpl,
+        .present = presentImpl,
+    };
+
+    fn waitEventImpl(ptr: *anyopaque) !Event {
+        const self: *HeadlessPlatform = @ptrCast(@alignCast(ptr));
+
+        // Return injected events first
+        if (self.injected_events.len > 0) {
+            return self.injected_events.orderedRemove(0);
+        }
+
+        // Otherwise, count frames and return quit when done
         self.frame_count += 1;
         if (self.frame_count > self.max_frames) {
             return Event{ .type = .quit };
@@ -92,21 +200,32 @@ pub const HeadlessPlatform = struct {
         return Event{ .type = .redraw_needed };
     }
 
-    /// Always returns null (no events in headless mode)
-    pub fn pollEvent(_: *HeadlessPlatform) ?Event {
+    fn pollEventImpl(ptr: *anyopaque) ?Event {
+        const self: *HeadlessPlatform = @ptrCast(@alignCast(ptr));
+
+        if (self.injected_events.len > 0) {
+            return self.injected_events.orderedRemove(0);
+        }
         return null;
+    }
+
+    fn presentImpl(ptr: *anyopaque) void {
+        const self: *HeadlessPlatform = @ptrCast(@alignCast(ptr));
+        self.render_calls += 1;
     }
 };
 
 // ============================================================================
-// App - The core application structure
+// App - The core application structure (Model 2: Platform at Root)
 // ============================================================================
 
-/// Application with typed State and Platform
+/// Application with typed State and runtime Platform interface
 ///
-/// Platform must provide:
-/// - waitForEvent(*Platform) !Event  - blocking wait for event
-/// - pollEvent(*Platform) ?Event     - non-blocking poll
+/// Ownership model (Platform at Root):
+/// - Platform created first, user owns it (window, GL context, events)
+/// - App borrows Platform via interface (vtable for runtime dispatch)
+/// - App owns GUI, execution logic
+/// - Destroy order: App first, Platform last
 ///
 /// Example:
 /// ```zig
@@ -114,22 +233,25 @@ pub const HeadlessPlatform = struct {
 ///     counter: Tracked(i32) = .{ .value = 0 },
 /// };
 ///
-/// // For real apps with SDL:
-/// var platform = try SdlPlatform.init(allocator, config);
-/// var app = try App(MyState, SdlPlatform).init(allocator, &platform, config);
+/// // Platform created first - owns OS resources
+/// var platform = try SdlPlatform.init(allocator, .{ .width = 800, .height = 600 });
+/// defer platform.deinit();
 ///
-/// // For tests:
-/// var platform = HeadlessPlatform.init();
-/// var app = try App(MyState, HeadlessPlatform).init(allocator, &platform, config);
+/// // App borrows platform via interface (vtable)
+/// var app = try App(MyState).init(allocator, platform.interface(), .{ .mode = .event_driven });
+/// defer app.deinit();
+///
+/// var state = MyState{};
+/// try app.run(myUI, &state);
 /// ```
-pub fn App(comptime State: type, comptime Platform: type) type {
+pub fn App(comptime State: type) type {
     return struct {
         const Self = @This();
 
         allocator: std.mem.Allocator,
         config: AppConfig,
         gui: *GUI,
-        platform: *Platform,
+        platform: PlatformInterface, // Borrowed via vtable, not owned
 
         // State tracking for efficient re-renders
         last_state_version: u64 = 0,
@@ -146,15 +268,15 @@ pub fn App(comptime State: type, comptime Platform: type) type {
 
         const MAX_FIELDS = 64;
 
-        /// Initialize application with platform
-        pub fn init(allocator: std.mem.Allocator, platform: *Platform, config: AppConfig) !*Self {
+        /// Initialize application with platform interface
+        ///
+        /// Platform must be initialized first and outlive the App.
+        /// App borrows the platform via vtable interface.
+        pub fn init(allocator: std.mem.Allocator, platform: PlatformInterface, config: AppConfig) !*Self {
             const app = try allocator.create(Self);
             errdefer allocator.destroy(app);
 
             const gui_config = GUIConfig{
-                .window_width = config.window_width,
-                .window_height = config.window_height,
-                .window_title = config.window_title,
                 .enable_animations = config.enable_animations,
                 .enable_accessibility = config.enable_accessibility,
                 .dpi_scale = config.dpi_scale,
@@ -173,7 +295,7 @@ pub fn App(comptime State: type, comptime Platform: type) type {
             return app;
         }
 
-        /// Clean up all resources
+        /// Clean up App resources (does NOT clean up platform - user owns that)
         pub fn deinit(self: *Self) void {
             self.gui.deinit();
             self.allocator.destroy(self);
@@ -189,7 +311,7 @@ pub fn App(comptime State: type, comptime Platform: type) type {
             self.running = false;
         }
 
-        /// Main application loop
+        /// Main application loop - dispatches to appropriate execution mode
         pub fn run(self: *Self, ui_function: UIFunction(State), state: *State) !void {
             switch (self.config.mode) {
                 .event_driven => try self.runEventDriven(ui_function, state),
@@ -199,18 +321,31 @@ pub fn App(comptime State: type, comptime Platform: type) type {
             }
         }
 
+        /// Process events without blocking (for game loop integration)
+        pub fn processEvents(self: *Self) void {
+            while (self.platform.pollEvent()) |event| {
+                self.processEvent(event);
+            }
+        }
+
+        /// Render a single frame (for game loop integration)
+        pub fn renderFrame(self: *Self, ui_function: UIFunction(State), state: *State) !void {
+            try self.renderFrameInternal(ui_function, state);
+            self.platform.present();
+        }
+
         /// Event-driven execution: 0% idle CPU
         ///
-        /// Blocks on platform.waitForEvent() - true idle efficiency.
+        /// Blocks on platform.waitEvent() via vtable - true idle efficiency.
         fn runEventDriven(self: *Self, ui_function: UIFunction(State), state: *State) !void {
             // Initial render
-            try self.renderFrame(ui_function, state);
+            try self.renderFrameInternal(ui_function, state);
 
             while (self.isRunning()) {
                 const start_time = std.time.nanoTimestamp();
 
-                // Block until event (0% CPU while waiting)
-                const event = self.platform.waitForEvent() catch |err| {
+                // Block until event via vtable (0% CPU while waiting)
+                const event = self.platform.waitEvent() catch |err| {
                     std.log.err("Platform event error: {}", .{err});
                     continue;
                 };
@@ -219,8 +354,9 @@ pub fn App(comptime State: type, comptime Platform: type) type {
                 self.processEvent(event);
 
                 // Only render if state changed OR explicit redraw needed
-                if (event.type == .redraw_needed or tracked.stateChanged(state, &self.last_state_version)) {
-                    try self.renderFrame(ui_function, state);
+                if (event.requiresRedraw() or tracked.stateChanged(state, &self.last_state_version)) {
+                    try self.renderFrameInternal(ui_function, state);
+                    self.platform.present();
                 }
 
                 const end_time = std.time.nanoTimestamp();
@@ -235,13 +371,12 @@ pub fn App(comptime State: type, comptime Platform: type) type {
             while (self.isRunning()) {
                 const frame_start = std.time.nanoTimestamp();
 
-                // Process all available events (non-blocking)
-                while (self.platform.pollEvent()) |event| {
-                    self.processEvent(event);
-                }
+                // Process all available events (non-blocking via vtable)
+                self.processEvents();
 
                 // Always render in game loop mode
-                try self.renderFrame(ui_function, state);
+                try self.renderFrameInternal(ui_function, state);
+                self.platform.present();
 
                 // Frame rate limiting
                 const frame_end = std.time.nanoTimestamp();
@@ -259,27 +394,28 @@ pub fn App(comptime State: type, comptime Platform: type) type {
         /// Minimal execution: Ultra-low resource usage
         fn runMinimal(self: *Self, ui_function: UIFunction(State), state: *State) !void {
             tracked.captureFieldVersions(state, &self.field_versions);
-            try self.renderFrame(ui_function, state);
+            try self.renderFrameInternal(ui_function, state);
 
             while (self.isRunning()) {
-                const event = self.platform.waitForEvent() catch continue;
+                const event = self.platform.waitEvent() catch continue;
 
                 if (event.type == .quit) {
                     self.running = false;
                     break;
                 }
 
-                if (event.type == .redraw_needed or tracked.stateChanged(state, &self.last_state_version)) {
+                if (event.requiresRedraw() or tracked.stateChanged(state, &self.last_state_version)) {
                     var changed_buffer: [MAX_FIELDS]usize = undefined;
                     _ = tracked.findChangedFields(state, &self.field_versions, &changed_buffer);
-                    try self.renderFrame(ui_function, state);
+                    try self.renderFrameInternal(ui_function, state);
+                    self.platform.present();
                 }
             }
         }
 
         /// Server-side execution: Single render pass
         fn runServerSide(self: *Self, ui_function: UIFunction(State), state: *State) !void {
-            try self.renderFrame(ui_function, state);
+            try self.renderFrameInternal(ui_function, state);
             self.running = false;
         }
 
@@ -292,8 +428,8 @@ pub fn App(comptime State: type, comptime Platform: type) type {
             }
         }
 
-        /// Render a complete frame
-        fn renderFrame(self: *Self, ui_function: UIFunction(State), state: *State) !void {
+        /// Render a complete frame (internal)
+        fn renderFrameInternal(self: *Self, ui_function: UIFunction(State), state: *State) !void {
             try self.gui.beginFrame();
             try ui_function(self.gui, state);
             try self.gui.endFrame();
@@ -335,24 +471,55 @@ pub const PerformanceStats = struct {
 // Tests
 // ============================================================================
 
-test "HeadlessPlatform returns quit after max_frames" {
-    var platform = HeadlessPlatform{ .max_frames = 2 };
+test "PlatformInterface vtable dispatch" {
+    var headless = HeadlessPlatform{ .max_frames = 2 };
+    const iface = headless.interface();
 
-    // First two calls return redraw_needed
-    const e1 = try platform.waitForEvent();
+    // Test vtable dispatch works
+    const e1 = try iface.waitEvent();
     try std.testing.expectEqual(EventType.redraw_needed, e1.type);
 
-    const e2 = try platform.waitForEvent();
+    const e2 = try iface.waitEvent();
     try std.testing.expectEqual(EventType.redraw_needed, e2.type);
 
-    // Third call returns quit
-    const e3 = try platform.waitForEvent();
+    const e3 = try iface.waitEvent();
     try std.testing.expectEqual(EventType.quit, e3.type);
 }
 
-test "HeadlessPlatform pollEvent always null" {
-    var platform = HeadlessPlatform.init();
-    try std.testing.expect(platform.pollEvent() == null);
+test "HeadlessPlatform event injection" {
+    var headless = HeadlessPlatform.init();
+
+    // Inject events
+    headless.injectEvent(.{ .type = .input });
+    headless.injectRedraw();
+
+    const iface = headless.interface();
+
+    // Should get injected events first
+    const e1 = try iface.waitEvent();
+    try std.testing.expectEqual(EventType.input, e1.type);
+
+    const e2 = try iface.waitEvent();
+    try std.testing.expectEqual(EventType.redraw_needed, e2.type);
+}
+
+test "HeadlessPlatform pollEvent" {
+    var headless = HeadlessPlatform.init();
+    const iface = headless.interface();
+
+    // No events injected - poll returns null
+    try std.testing.expect(iface.pollEvent() == null);
+
+    // Inject event
+    headless.injectEvent(.{ .type = .input });
+
+    // Now poll returns the event
+    const event = iface.pollEvent();
+    try std.testing.expect(event != null);
+    try std.testing.expectEqual(EventType.input, event.?.type);
+
+    // And it's consumed
+    try std.testing.expect(iface.pollEvent() == null);
 }
 
 test "App with HeadlessPlatform runs and exits" {
@@ -360,10 +527,10 @@ test "App with HeadlessPlatform runs and exits" {
         counter: tracked.Tracked(i32) = .{ .value = 0 },
     };
 
-    var platform = HeadlessPlatform{ .max_frames = 1 };
-    var app = try App(TestState, HeadlessPlatform).init(
+    var headless = HeadlessPlatform{ .max_frames = 1 };
+    var app = try App(TestState).init(
         std.testing.allocator,
-        &platform,
+        headless.interface(),
         .{ .mode = .event_driven },
     );
     defer app.deinit();
@@ -388,10 +555,10 @@ test "App server_side mode renders once" {
         rendered: tracked.Tracked(bool) = .{ .value = false },
     };
 
-    var platform = HeadlessPlatform.init();
-    var app = try App(TestState, HeadlessPlatform).init(
+    var headless = HeadlessPlatform.init();
+    var app = try App(TestState).init(
         std.testing.allocator,
-        &platform,
+        headless.interface(),
         .{ .mode = .server_side },
     );
     defer app.deinit();
@@ -412,6 +579,38 @@ test "App server_side mode renders once" {
     try std.testing.expect(!app.isRunning());
 }
 
+test "App game loop mode with processEvents/renderFrame" {
+    const TestState = struct {
+        frame: tracked.Tracked(u32) = .{ .value = 0 },
+    };
+
+    var headless = HeadlessPlatform.init();
+    var app = try App(TestState).init(
+        std.testing.allocator,
+        headless.interface(),
+        .{ .mode = .game_loop },
+    );
+    defer app.deinit();
+
+    var state = TestState{};
+
+    const testUI = struct {
+        fn render(gui: *GUI, s: *TestState) !void {
+            _ = gui;
+            s.frame.set(s.frame.get() + 1);
+        }
+    }.render;
+
+    // Simulate game loop usage
+    for (0..3) |_| {
+        app.processEvents();
+        try app.renderFrame(testUI, &state);
+    }
+
+    try std.testing.expectEqual(@as(u32, 3), state.frame.get());
+    try std.testing.expectEqual(@as(u64, 3), app.frame_count);
+}
+
 test "ExecutionMode enum values" {
     try std.testing.expect(@TypeOf(ExecutionMode.event_driven) == ExecutionMode);
     try std.testing.expect(@TypeOf(ExecutionMode.game_loop) == ExecutionMode);
@@ -423,13 +622,22 @@ test "AppConfig default values" {
     const config = AppConfig{};
 
     try std.testing.expectEqual(ExecutionMode.event_driven, config.mode);
-    try std.testing.expectEqual(@as(u32, 800), config.window_width);
-    try std.testing.expectEqual(@as(u32, 600), config.window_height);
     try std.testing.expectEqual(@as(u32, 60), config.target_fps);
+    try std.testing.expectEqual(false, config.hot_reload);
 }
 
 test "PerformanceStats initialization" {
     const stats = PerformanceStats{};
     try std.testing.expectEqual(@as(u64, 0), stats.last_frame_time_ns);
     try std.testing.expectEqual(@as(u32, 0), stats.current_fps);
+}
+
+test "Event.requiresRedraw" {
+    const redraw_event = Event{ .type = .redraw_needed };
+    const input_event = Event{ .type = .input };
+    const quit_event = Event{ .type = .quit };
+
+    try std.testing.expect(redraw_event.requiresRedraw());
+    try std.testing.expect(input_event.requiresRedraw());
+    try std.testing.expect(!quit_event.requiresRedraw());
 }
