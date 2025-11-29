@@ -52,11 +52,12 @@ zig-gui builds on **zlay** (our data-oriented layout engine):
 ```zig
 // zig-gui wraps zlay for higher-level functionality
 pub const GUI = struct {
-    zlay_ctx: *zlay.Context,        // Layout engine
-    state_manager: StateManager,    // Reactive state
-    event_system: EventSystem,      // Input handling
-    renderer: RendererInterface,    // Platform rendering
-    hot_reload: ?HotReload,        // Development tools
+    layout_engine: *LayoutEngine,       // Layout calculations
+    event_manager: *EventManager,       // Input handling
+    style_system: *StyleSystem,         // Theming
+    renderer: ?*RendererInterface,      // Platform rendering
+    animation_system: ?*AnimationSystem, // Optional animations
+    // State: Use Tracked(T) in your own structs - no framework state manager needed!
 };
 ```
 
