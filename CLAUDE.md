@@ -190,23 +190,65 @@ src/
 
 ### State Management Philosophy
 
-**Simple, Reactive, Type-Safe**:
+**Tracked Signals: Simple, Zero-Allocation, Universal**
+
+zig-gui uses a **Tracked Signals** approach inspired by SolidJS and Svelte 5. This gives us:
+- Best-in-class DX (feels like SwiftUI/React)
+- Zero allocations on state changes
+- Works identically across all execution modes
+- Future-proof (can migrate to comptime optimization)
 
 ```zig
-// Create reactive state
-const counter = try state_store.create(i32, "counter", 0);
-const user = try state_store.create(User, "current_user", default_user);
+// Define state with Tracked wrappers - 4 bytes overhead per field
+const AppState = struct {
+    counter: Tracked(i32) = .{ .value = 0 },
+    name: Tracked([]const u8) = .{ .value = "World" },
+    items: Tracked(std.BoundedArray(Item, 100)) = .{ .value = .{} },
+};
 
-// State automatically triggers UI updates when changed
-counter.set(counter.get() + 1); // UI updates automatically
+// Usage - simple .get() and .set()
+fn myApp(gui: *GUI, state: *AppState) !void {
+    try gui.text("Counter: {}", .{state.counter.get()});
 
-// Computed/derived state
-const total_count = try state_store.computed(i32, &.{"counter", "multiplier"}, 
-    struct {
-        fn compute(c: i32, m: i32) i32 { return c * m; }
-    }.compute
-);
+    if (try gui.button("Increment")) {
+        state.counter.set(state.counter.get() + 1);  // O(1), no allocation
+    }
+
+    // For collections, use .ptr() to get mutable access
+    if (try gui.button("Add Item")) {
+        state.items.ptr().append(.{ .name = "New" }) catch {};
+    }
+}
+
+// Framework detects changes via version counters - O(N) where N = field count
+// NOT O(data size) like React/Flutter tree diffing
 ```
+
+**Why Tracked Signals?**
+
+| Approach | Memory | Write Cost | Change Detection | Embedded? |
+|----------|--------|------------|------------------|-----------|
+| React (Virtual DOM) | High (tree copy) | O(1) + schedule | O(n) tree diff | No |
+| ImGui (none) | Low | O(1) | N/A (always redraws) | Yes but wasteful |
+| Observer Pattern | Medium (callbacks) | O(k) notify | O(k) callbacks | No |
+| **Tracked Signals** | **4 bytes/field** | **O(1)** | **O(N) field count** | **Yes** |
+
+**Future: Comptime Reactive (Option E)**
+
+Current Tracked(T) design allows seamless migration to comptime-generated types:
+```zig
+// Phase 2: Wrap existing Tracked-based structs for O(1) global check
+const WrappedState = Reactive(AppState);
+if (wrapped.changed(&last)) { ... }  // O(1) instead of O(N)
+
+// Phase 3 (optional): Users can migrate to plain structs
+const AppState = struct { counter: i32 = 0 };  // No wrapper!
+const State = Reactive(AppState);
+state.counter()       // comptime-generated getter
+state.setCounter(v)   // comptime-generated setter
+```
+
+See [STATE_MANAGEMENT.md](docs/STATE_MANAGEMENT.md) for full design analysis.
 
 ### Hot Reload Implementation
 
