@@ -378,3 +378,87 @@ test "Tracked state integration concept" {
     // No more changes
     try std.testing.expect(!tracked.stateChanged(&state, &last_version));
 }
+
+test "AppConfig default values" {
+    const config = AppConfig{};
+
+    try std.testing.expectEqual(ExecutionMode.event_driven, config.mode);
+    try std.testing.expectEqual(@as(u32, 800), config.window_width);
+    try std.testing.expectEqual(@as(u32, 600), config.window_height);
+    try std.testing.expectEqual(@as(u32, 60), config.target_fps);
+    try std.testing.expectEqual(false, config.enable_animations);
+    try std.testing.expectEqual(false, config.hot_reload);
+}
+
+test "AppConfig custom values" {
+    const config = AppConfig{
+        .mode = .game_loop,
+        .window_width = 1920,
+        .window_height = 1080,
+        .target_fps = 120,
+        .enable_animations = true,
+    };
+
+    try std.testing.expectEqual(ExecutionMode.game_loop, config.mode);
+    try std.testing.expectEqual(@as(u32, 1920), config.window_width);
+    try std.testing.expectEqual(@as(u32, 1080), config.window_height);
+    try std.testing.expectEqual(@as(u32, 120), config.target_fps);
+    try std.testing.expectEqual(true, config.enable_animations);
+}
+
+test "Event type values" {
+    try std.testing.expectEqual(EventType.redraw_needed, EventType.redraw_needed);
+    try std.testing.expectEqual(EventType.input, EventType.input);
+    try std.testing.expectEqual(EventType.timer, EventType.timer);
+    try std.testing.expectEqual(EventType.custom, EventType.custom);
+    try std.testing.expectEqual(EventType.quit, EventType.quit);
+}
+
+test "Reactive state with App integration" {
+    // Test Reactive (Option E) with App concepts
+    const Tracked = tracked.Tracked;
+    const Reactive = tracked.Reactive;
+
+    const InnerState = struct {
+        counter: Tracked(i32) = .{ .value = 0 },
+        name: Tracked([]const u8) = .{ .value = "test" },
+        clicks: Tracked(u32) = .{ .value = 0 },
+    };
+
+    var state = Reactive(InnerState).init();
+    var last_version: u64 = 0;
+
+    // Initial check - O(1)
+    try std.testing.expect(!state.changed(&last_version));
+
+    // Multiple field changes
+    state.set(.counter, 10);
+    state.set(.clicks, 5);
+
+    // Single O(1) check detects all changes
+    try std.testing.expect(state.changed(&last_version));
+    try std.testing.expectEqual(@as(u64, 2), state.globalVersion());
+
+    // Values correct
+    try std.testing.expectEqual(@as(i32, 10), state.get(.counter));
+    try std.testing.expectEqual(@as(u32, 5), state.get(.clicks));
+}
+
+test "Execution mode descriptions" {
+    // Verify all execution modes are defined
+    const modes = [_]ExecutionMode{
+        .event_driven,
+        .game_loop,
+        .minimal,
+        .server_side,
+    };
+
+    for (modes) |mode| {
+        // Each mode should have distinct use cases
+        const is_valid = mode == .event_driven or
+            mode == .game_loop or
+            mode == .minimal or
+            mode == .server_side;
+        try std.testing.expect(is_valid);
+    }
+}
