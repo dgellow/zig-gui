@@ -6,7 +6,7 @@ const Size = core.Size;
 const Rect = core.Rect;
 const EdgeInsets = core.EdgeInsets;
 const Color = core.Color;
-const ElementType = core.ElementType;
+pub const ElementType = core.ElementType;
 pub const ElementId = core.ElementId;
 const FlexDirection = core.FlexDirection;
 const Alignment = core.Alignment;
@@ -237,7 +237,7 @@ pub const LayoutEngine = struct {
         var index: u32 = undefined;
         
         // Try to reuse from free list first
-        index = self.free_list.pop() orelse blk: {
+        index = self.free_list.popOrNull() orelse blk: {
             const new_index = self.element_count;
             self.element_count += 1;
             break :blk new_index;

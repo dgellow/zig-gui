@@ -438,7 +438,7 @@ test "Color creation and conversion" {
     try testing.expect(@abs(rgba.a - 128.0/255.0) < 0.001);
     
     const rgba32 = red.toRGBA32();
-    try testing.expect(rgba32 == 0xFF0000FF); // ARGB format
+    try testing.expect(rgba32 == 0xFFFF0000); // ARGB format: A=FF, R=FF, G=00, B=00
     
     const lerped = Color.BLACK.lerp(Color.WHITE, 0.5);
     try testing.expect(@abs(lerped.r - 0.5) < 0.001);
