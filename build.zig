@@ -28,27 +28,6 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addOptions("build_options", build_options);
     b.installArtifact(lib);
 
-    // ===== Revolutionary Demo =====
-
-    // Create revolutionary demo executable
-    const demo_exe = b.addExecutable(.{
-        .name = "revolutionary_demo",
-        .root_source_file = b.path("examples/revolutionary_demo.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Install the demo
-    b.installArtifact(demo_exe);
-
-    // Create run step for the demo
-    const demo_run = b.addRunArtifact(demo_exe);
-    demo_run.step.dependOn(b.getInstallStep());
-
-    // Add run step
-    const demo_step = b.step("demo", "Run the revolutionary data-oriented demo");
-    demo_step.dependOn(&demo_run.step);
-
     // ===== Examples =====
 
     // Counter example (event-driven mode)
@@ -180,22 +159,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_layout_tests.step);
     test_step.dependOn(&run_text_tests.step);
     test_step.dependOn(&run_cpu_tests.step);
-
-    // Performance benchmark
-    const benchmark_exe = b.addExecutable(.{
-        .name = "benchmark",
-        .root_source_file = b.path("examples/benchmark.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-
-    b.installArtifact(benchmark_exe);
-
-    const benchmark_run = b.addRunArtifact(benchmark_exe);
-    benchmark_run.step.dependOn(b.getInstallStep());
-
-    const benchmark_step = b.step("benchmark", "Run performance benchmarks");
-    benchmark_step.dependOn(&benchmark_run.step);
 
     // ===== Profiling Tools =====
 

@@ -154,7 +154,6 @@ pub const GUI = struct {
             .event_manager = event_manager,
             .animation_system = animation_system,
             .asset_manager = asset_manager,
-            .root_view = null,
             .config = config,
             .running = true,
         };
@@ -167,11 +166,6 @@ pub const GUI = struct {
         // Clean up all subsystems in reverse order of creation
         if (self.animation_system) |animation_system| {
             animation_system.deinit();
-        }
-
-        // Clean up hierarchy if any
-        if (self.root_view) |root| {
-            root.deinit();
         }
 
         self.asset_manager.deinit();
@@ -243,16 +237,10 @@ pub const GUI = struct {
         profiler.zone(@src(), "GUI.endFrame", .{});
         defer profiler.endZone();
 
-        // Calculate layout if needed
-        if (self.layout_engine.needsLayout()) {
-            profiler.zone(@src(), "LayoutEngine.calculateLayout", .{});
-            defer profiler.endZone();
-            if (self.root_view) |root| {
-                try self.layout_engine.calculateLayout(root);
-            }
-        }
+        // Layout is computed during widget rendering in immediate-mode
+        // No separate layout pass needed
 
-        // Render if we have a renderer and root view
+        // Render if we have a renderer
         if (self.renderer) |renderer| {
             // Removed root_view painting - moving to immediate-mode API
             // if (self.root_view) |root| {
@@ -298,10 +286,9 @@ pub const GUI = struct {
     }
 
     /// Handle raw input data
-    pub fn handleInput(self: *GUI, input_data: ?*anyopaque) void {
-        _ = input_data;
-        // Mark for redraw since input might change UI state
-        self.layout_engine.markDirty(self.root_view orelse return);
+    pub fn handleInput(self: *GUI, _: ?*anyopaque) void {
+        _ = self;
+        // Immediate-mode: widgets are rebuilt each frame, no need to mark dirty
     }
 
     /// Process a platform event by forwarding it to the event manager
