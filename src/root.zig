@@ -6,7 +6,7 @@
 // - Universality: Embedded to desktop with the same code
 //
 // State Management: Uses Tracked Signals (4 bytes per field, O(1) writes)
-// See STATE_MANAGEMENT.md for design rationale.
+// See DESIGN.md for design rationale.
 
 // =============================================================================
 // Core Application Types
@@ -85,7 +85,7 @@ pub const RendererInterface = @import("renderer.zig").RendererInterface;
 // }
 // ```
 //
-// See STATE_MANAGEMENT.md for full design rationale.
+// See DESIGN.md for full design rationale.
 
 const tracked = @import("tracked.zig");
 
@@ -233,6 +233,6 @@ pub const platforms = struct {
 // zig build -Denable_profiling=true
 // ```
 //
-// See PROFILING.md for full documentation.
+// See DESIGN.md for full documentation.
 
 pub const profiler = @import("profiler.zig");
