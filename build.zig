@@ -11,16 +11,11 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "enable_profiling", enable_profiling);
 
-    // Create zlay module (our data-oriented layout engine)
-    const zlay_mod = b.addModule("zlay", .{
-        .root_source_file = b.path("lib/zlay/src/zlay.zig"),
-    });
-
     // Create zig-gui module for examples to import
+    // Note: zlay is now integrated into src/layout/ instead of separate module
     const zig_gui_mod = b.addModule("zig-gui", .{
         .root_source_file = b.path("src/root.zig"),
     });
-    zig_gui_mod.addImport("zlay", zlay_mod);
     zig_gui_mod.addOptions("build_options", build_options);
 
     // Create static library
@@ -30,7 +25,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    lib.root_module.addImport("zlay", zlay_mod);
     lib.root_module.addOptions("build_options", build_options);
     b.installArtifact(lib);
 
@@ -43,9 +37,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
-    // Add zlay as a dependency for the demo
-    demo_exe.root_module.addImport("zlay", zlay_mod);
 
     // Install the demo
     b.installArtifact(demo_exe);
@@ -198,7 +189,6 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
 
-    benchmark_exe.root_module.addImport("zlay", zlay_mod);
     b.installArtifact(benchmark_exe);
 
     const benchmark_run = b.addRunArtifact(benchmark_exe);

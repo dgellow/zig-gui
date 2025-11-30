@@ -131,14 +131,11 @@ pub const ImageFormat = @import("core/image.zig").ImageFormat;
 pub const FontHandle = @import("core/font.zig").FontHandle;
 
 // =============================================================================
-// Components
+// Components (moved to immediate-mode API - see spec.md)
 // =============================================================================
-
-pub const components = struct {
-    pub const View = @import("components/view.zig").View;
-    pub const Container = @import("components/container.zig").Container;
-    pub const Box = @import("components/box.zig").Box;
-};
+//
+// Old retained-mode components (View, Container, Box) removed.
+// New immediate-mode API coming: gui.button(id, text), gui.container(id, style, fn), etc.
 
 // =============================================================================
 // Layout (integrated from zlay v2.0 - 4-14x faster!)
@@ -177,7 +174,6 @@ pub const layout = struct {
 
 pub const events = struct {
     pub const EventManager = @import("events.zig").EventManager;
-    pub const UIEvent = @import("events.zig").UIEvent;
     pub const InputEvent = @import("events.zig").InputEvent;
     pub const Key = @import("events.zig").Key;
     pub const MouseButton = @import("events.zig").MouseButton;

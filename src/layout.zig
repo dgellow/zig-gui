@@ -1,4 +1,4 @@
-///! High-Performance Layout System for zig-gui
+//! High-Performance Layout System for zig-gui
 //!
 //! Data-oriented layout engine integrated directly into zig-gui.
 //! Performance: 0.029-0.107μs per element (4-14x faster than Taffy/Yoga)

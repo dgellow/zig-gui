@@ -10,7 +10,7 @@ const StyleSystem = @import("style.zig").StyleSystem;
 const EventManager = @import("events.zig").EventManager;
 const AnimationSystem = @import("animation.zig").AnimationSystem;
 const AssetManager = @import("asset.zig").AssetManager;
-const View = @import("components/view.zig").View;
+// const View = @import("components/view.zig").View; // Removed - moving to immediate-mode API
 const profiler = @import("profiler.zig");
 
 /// Configuration options for GUI initialization
@@ -69,7 +69,7 @@ pub const GUI = struct {
     animation_system: ?*AnimationSystem,
     asset_manager: *AssetManager,
 
-    root_view: ?*View,
+    // root_view: ?*View, // Removed - moving to immediate-mode API
 
     config: GUIConfig,
     running: bool,
@@ -184,11 +184,12 @@ pub const GUI = struct {
         self.allocator.destroy(self);
     }
 
-    /// Set the root view for the UI hierarchy
-    pub fn setRootView(self: *GUI, view: *View) void {
-        self.root_view = view;
-        self.layout_engine.markDirty(view);
-    }
+    // /// Set the root view for the UI hierarchy
+    // /// Removed - moving to immediate-mode API
+    // pub fn setRootView(self: *GUI, view: *View) void {
+    //     self.root_view = view;
+    //     self.layout_engine.markDirty(view);
+    // }
 
     // =========================================================================
     // Frame Management (used by App)
@@ -253,15 +254,16 @@ pub const GUI = struct {
 
         // Render if we have a renderer and root view
         if (self.renderer) |renderer| {
-            if (self.root_view) |root| {
-                profiler.zone(@src(), "Renderer.paint", .{});
-                defer profiler.endZone();
-                const render_context = RenderContext{
-                    .renderer = renderer,
-                    .style_system = self.style_system,
-                };
-                self.paintView(root, &render_context);
-            }
+            // Removed root_view painting - moving to immediate-mode API
+            // if (self.root_view) |root| {
+            //     profiler.zone(@src(), "Renderer.paint", .{});
+            //     defer profiler.endZone();
+            //     const render_context = RenderContext{
+            //         .renderer = renderer,
+            //         .style_system = self.style_system,
+            //     };
+            //     self.paintView(root, &render_context);
+            // }
             {
                 profiler.zone(@src(), "Renderer.endFrame", .{});
                 defer profiler.endZone();
@@ -723,30 +725,31 @@ pub const GUI = struct {
     // Internal Helpers
     // =========================================================================
 
-    /// Paint a view and its children
-    fn paintView(self: *GUI, view: *View, context: *const RenderContext) void {
-        // Skip if not visible
-        if (!view.isVisible()) return;
-
-        // Save renderer state
-        if (self.renderer) |renderer| {
-            renderer.vtable.save(renderer);
-            renderer.vtable.clip(renderer, view.rect);
-        }
-
-        // Paint view
-        view.vtable.paint(view, context);
-
-        // Paint children
-        for (view.children.items) |child| {
-            self.paintView(child, context);
-        }
-
-        // Restore renderer state
-        if (self.renderer) |renderer| {
-            renderer.vtable.restore(renderer);
-        }
-    }
+    // /// Paint a view and its children
+    // /// Removed - moving to immediate-mode API
+    // fn paintView(self: *GUI, view: *View, context: *const RenderContext) void {
+    //     // Skip if not visible
+    //     if (!view.isVisible()) return;
+    //
+    //     // Save renderer state
+    //     if (self.renderer) |renderer| {
+    //         renderer.vtable.save(renderer);
+    //         renderer.vtable.clip(renderer, view.rect);
+    //     }
+    //
+    //     // Paint view
+    //     view.vtable.paint(view, context);
+    //
+    //     // Paint children
+    //     for (view.children.items) |child| {
+    //         self.paintView(child, context);
+    //     }
+    //
+    //     // Restore renderer state
+    //     if (self.renderer) |renderer| {
+    //         renderer.vtable.restore(renderer);
+    //     }
+    // }
 };
 
 // ============================================================================
