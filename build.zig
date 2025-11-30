@@ -116,32 +116,15 @@ pub fn build(b: *std.Build) void {
 
     // ===== Tests and Benchmarks =====
 
-    // Create test suite for zlay
-    const zlay_tests = b.addTest(.{
-        .root_source_file = b.path("lib/zlay/src/zlay.zig"),
+    // Create test suite for zig-gui (includes layout tests)
+    const gui_tests = b.addTest(.{
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    gui_tests.root_module.addOptions("build_options", build_options);
 
-    const run_zlay_tests = b.addRunArtifact(zlay_tests);
-
-    // Create test suite for layout_engine
-    const layout_tests = b.addTest(.{
-        .root_source_file = b.path("lib/zlay/src/layout_engine.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const run_layout_tests = b.addRunArtifact(layout_tests);
-
-    // Create test suite for text measurement
-    const text_tests = b.addTest(.{
-        .root_source_file = b.path("lib/zlay/src/text.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const run_text_tests = b.addRunArtifact(text_tests);
+    const run_gui_tests = b.addRunArtifact(gui_tests);
 
     // Create CPU usage verification test
     const cpu_tests = b.addTest(.{
@@ -155,9 +138,7 @@ pub fn build(b: *std.Build) void {
 
     // Test step that runs all tests
     const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&run_zlay_tests.step);
-    test_step.dependOn(&run_layout_tests.step);
-    test_step.dependOn(&run_text_tests.step);
+    test_step.dependOn(&run_gui_tests.step);
     test_step.dependOn(&run_cpu_tests.step);
 
     // ===== Profiling Tools =====
