@@ -396,31 +396,38 @@ exe.root_module.addImport("zig-gui", gui_dep.module("zig-gui"));
 
 ## 📚 Examples
 
-### Desktop Email Client
+### Counter Example (Event-Driven Mode)
 ```bash
-zig build run-email-client
-# → Full-featured email client, 0% CPU when idle
+zig build counter
+# → Simple counter app demonstrating 0% idle CPU with Tracked state
 ```
 
-### Game HUD
-```bash  
-zig build run-game-hud
-# → 120+ FPS game interface with health bars, minimap, inventory
-```
+Demonstrates:
+- Event-driven execution mode
+- Tracked(T) reactive state management
+- Immediate-mode widget API (button, text)
+- Zero allocations on state changes
 
-### Embedded Control Panel  
+### Game HUD Example (Game Loop Mode)
 ```bash
-zig build run-embedded-demo
-# → Runs on Teensy 4.1, <32KB RAM usage
+zig build game-hud
+# → Game HUD with continuous rendering and performance monitoring
 ```
 
-### Data Visualization
+Demonstrates:
+- Game loop execution mode
+- Real-time state updates (health, mana, score)
+- Complex UI with multiple sections (stats, actions, game state)
+- FPS monitoring and frame timing
+- Container layout with padding
+
+### Run All Examples
 ```bash
-zig build run-data-viz
-# → Interactive charts, real-time updates
+zig build examples
+# → Runs both counter and game-hud examples sequentially
 ```
 
-All examples available in `/examples` directory.
+All examples available in `/examples` directory. Both run with HeadlessPlatform (no rendering) to demonstrate the framework architecture. For visual output, integrate with SdlPlatform or other rendering backends.
 
 ## 🌍 Language Bindings
 
