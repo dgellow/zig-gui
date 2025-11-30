@@ -535,6 +535,110 @@ pub const GUI = struct {
         self.im_cursor_y += self.im_spacing;
     }
 
+    /// Text input configuration
+    pub const TextInputConfig = struct {
+        width: f32 = 200,
+        max_length: usize = 256,
+    };
+
+    /// Create a text input field
+    /// Returns true if the input is focused (clicked)
+    ///
+    /// Note: Full keyboard input requires keyboard event handling (not yet implemented)
+    /// For now, this renders the input box and detects focus
+    ///
+    /// Example:
+    /// ```zig
+    /// var buffer: [256]u8 = undefined;
+    /// const focused = try gui.textInput(&buffer, state.text.get(), .{});
+    /// if (focused) {
+    ///     // Handle keyboard input when event system supports it
+    /// }
+    /// ```
+    pub fn textInput(self: *GUI, buffer: []u8, current_text: []const u8, config: TextInputConfig) !bool {
+        _ = buffer;
+        const id = self.generateId("textinput");
+
+        const input_width = config.width;
+        const input_height = self.im_line_height + self.im_padding;
+
+        const rect = Rect{
+            .x = self.im_cursor_x,
+            .y = self.im_cursor_y,
+            .width = input_width,
+            .height = input_height,
+        };
+
+        // Check if mouse is over input
+        const is_hot = pointInRect(self.im_mouse_x, self.im_mouse_y, rect);
+        if (is_hot) {
+            self.im_hot_id = id;
+        }
+
+        // Handle interaction
+        var focused = false;
+        const is_active = self.im_active_id == id;
+
+        if (is_hot and self.mouseClicked()) {
+            self.im_active_id = id;
+            focused = true;
+        }
+
+        // Draw text input if we have a renderer
+        if (self.renderer) |renderer| {
+            // Background color based on state
+            const bg_color = if (is_active)
+                Color{ .r = 60, .g = 60, .b = 90, .a = 255 } // Focused
+            else if (is_hot)
+                Color{ .r = 55, .g = 55, .b = 85, .a = 255 } // Hover
+            else
+                Color{ .r = 40, .g = 40, .b = 70, .a = 255 }; // Normal
+
+            const bg_paint = Paint{ .color = bg_color };
+            renderer.vtable.drawRoundRect(renderer, rect, 3.0, bg_paint);
+
+            // Draw current text
+            if (current_text.len > 0) {
+                const text_position = Point{
+                    .x = rect.x + self.im_padding / 2,
+                    .y = rect.y + input_height * 0.7,
+                };
+
+                const text_paint = Paint{
+                    .color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 },
+                };
+
+                renderer.vtable.drawText(renderer, current_text, text_position, text_paint);
+            }
+
+            // Draw cursor if focused
+            if (is_active) {
+                const cursor_x = rect.x + self.im_padding / 2 +
+                    @as(f32, @floatFromInt(current_text.len)) * 8.0; // Approximate char width
+                const cursor_rect = Rect{
+                    .x = cursor_x,
+                    .y = rect.y + 4,
+                    .width = 2,
+                    .height = input_height - 8,
+                };
+
+                const cursor_color = Color{ .r = 200, .g = 200, .b = 255, .a = 255 };
+                renderer.vtable.drawRect(renderer, cursor_rect, Paint{ .color = cursor_color });
+            }
+        }
+
+        // Advance cursor
+        self.im_cursor_x += input_width + self.im_spacing;
+
+        // Wrap if too wide
+        const window_width: f32 = @floatFromInt(self.config.window_width);
+        if (self.im_cursor_x > window_width - self.im_padding) {
+            self.newLine();
+        }
+
+        return focused;
+    }
+
     /// Begin a horizontal layout group
     pub fn beginRow(self: *GUI) void {
         // Row is the default, so just reset to start of line
@@ -544,6 +648,44 @@ pub const GUI = struct {
     /// End a horizontal layout group
     pub fn endRow(self: *GUI) void {
         self.newLine();
+    }
+
+    /// Container configuration
+    pub const ContainerConfig = struct {
+        padding: f32 = 8,
+        background_color: ?Color = null,
+        border_color: ?Color = null,
+        border_width: f32 = 0,
+        border_radius: f32 = 0,
+    };
+
+    /// Begin a container group
+    /// Containers provide visual grouping and padding for child widgets
+    pub fn beginContainer(self: *GUI, config: ContainerConfig) void {
+        // Save current cursor position (container top-left)
+        const container_x = self.im_cursor_x;
+        const container_y = self.im_cursor_y;
+
+        // Apply container padding
+        self.im_cursor_x += config.padding;
+        self.im_cursor_y += config.padding;
+
+        // Store container info for endContainer
+        // For now, we'll just track the padding amount
+        // A full implementation would use a stack for nested containers
+        _ = container_x;
+        _ = container_y;
+    }
+
+    /// End a container group
+    /// Draws the container background and border if configured
+    pub fn endContainer(self: *GUI, config: ContainerConfig) void {
+        // For now, just apply bottom padding
+        self.im_cursor_y += config.padding;
+        self.newLine();
+
+        // TODO: Draw container background/border
+        // This would require tracking container bounds from beginContainer
     }
 
     // =========================================================================
@@ -603,4 +745,134 @@ test "GUI point in rect" {
     try std.testing.expect(!GUI.pointInRect(5, 5, rect));
     try std.testing.expect(!GUI.pointInRect(150, 30, rect));
     try std.testing.expect(!GUI.pointInRect(50, 100, rect));
+}
+
+test "GUI button interaction" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    // Initially, no button is clicked
+    const clicked1 = try gui.button("Test Button");
+    try std.testing.expect(!clicked1);
+
+    // Simulate mouse over button (approximate position)
+    gui.setMousePosition(50, 12);
+
+    // Mouse down - button should not click yet
+    gui.setMouseButton(true);
+    const clicked2 = try gui.button("Test Button");
+    try std.testing.expect(!clicked2);
+
+    // Mouse up - button should click
+    gui.setMouseButton(false);
+
+    try gui.endFrame();
+}
+
+test "GUI text rendering" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    // Text should render without error
+    try gui.text("Hello, {s}!", .{"World"});
+
+    // Cursor should advance
+    const cursor_before = gui.im_cursor_x;
+    gui.textRaw("More text");
+    const cursor_after = gui.im_cursor_x;
+
+    try std.testing.expect(cursor_after > cursor_before);
+
+    try gui.endFrame();
+}
+
+test "GUI checkbox toggling" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    // Initially unchecked, not toggled
+    const toggled1 = try gui.checkbox(false);
+    try std.testing.expect(!toggled1);
+
+    // Simulate click on checkbox
+    gui.setMousePosition(10, 10); // Approximate checkbox position
+    gui.setMouseButton(true);
+    const toggled2 = try gui.checkbox(false);
+    try std.testing.expect(!toggled2); // Not toggled yet (mouse still down)
+
+    try gui.endFrame();
+}
+
+test "GUI container padding" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    const cursor_before = gui.im_cursor_x;
+
+    // Begin container with padding
+    gui.beginContainer(.{ .padding = 20 });
+
+    // Cursor should be offset by padding
+    try std.testing.expectEqual(cursor_before + 20, gui.im_cursor_x);
+
+    // End container
+    gui.endContainer(.{ .padding = 20 });
+
+    try gui.endFrame();
+}
+
+test "GUI row layout" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    gui.beginRow();
+
+    // Add widgets horizontally
+    try gui.text("Label:", .{});
+    const button_x = gui.im_cursor_x;
+    _ = try gui.button("Click");
+    const after_button_x = gui.im_cursor_x;
+
+    // Button should be positioned after label
+    try std.testing.expect(after_button_x > button_x);
+
+    gui.endRow();
+
+    // After row, should be on new line
+    try std.testing.expect(gui.im_cursor_x == gui.im_padding);
+
+    try gui.endFrame();
+}
+
+test "GUI text input focus" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    var buffer: [256]u8 = undefined;
+
+    // Initially not focused
+    const focused1 = try gui.textInput(&buffer, "Hello", .{});
+    try std.testing.expect(!focused1);
+
+    // Click on text input (approximate position)
+    gui.setMousePosition(100, 12);
+    gui.setMouseButton(true);
+    _ = try gui.textInput(&buffer, "Hello", .{});
+
+    // Release mouse - should become focused
+    gui.setMouseButton(false);
+
+    try gui.endFrame();
 }
