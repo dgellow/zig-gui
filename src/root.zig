@@ -6,7 +6,7 @@
 // - Universality: Embedded to desktop with the same code
 //
 // State Management: Uses Tracked Signals (4 bytes per field, O(1) writes)
-// See docs/STATE_MANAGEMENT.md for design rationale.
+// See DESIGN.md for design rationale.
 
 // =============================================================================
 // Core Application Types
@@ -85,7 +85,7 @@ pub const RendererInterface = @import("renderer.zig").RendererInterface;
 // }
 // ```
 //
-// See docs/STATE_MANAGEMENT.md for full design rationale.
+// See DESIGN.md for full design rationale.
 
 const tracked = @import("tracked.zig");
 
@@ -138,6 +138,42 @@ pub const FontHandle = @import("core/font.zig").FontHandle;
 // New immediate-mode API coming: gui.button(id, text), gui.container(id, style, fn), etc.
 
 // =============================================================================
+// Widget ID System
+// =============================================================================
+//
+// Zero-cost widget identification for immediate-mode GUI.
+// - Comptime hashing for Zig users (zero runtime cost)
+// - Runtime hashing for C API and dynamic strings
+// - Hierarchical ID stack for scoping
+//
+// Example:
+// ```zig
+// // Zero-cost comptime IDs
+// const button_id = WidgetId.from("settings_button");
+//
+// // Hierarchical scoping
+// var id_stack = IdStack.init(null);
+// id_stack.push("panel");
+// defer id_stack.pop();
+// const scoped_id = id_stack.combineLabel("button");
+//
+// // Loops
+// for (items, 0..) |_, i| {
+//     id_stack.pushIndex(i);
+//     defer id_stack.pop();
+//     const item_id = id_stack.combineLabel("delete");
+// }
+// ```
+
+const widget_id = @import("widget_id.zig");
+
+/// Widget identifier - 4 bytes, zero-cost comptime hashing
+pub const WidgetId = widget_id.WidgetId;
+
+/// ID stack for hierarchical widget scoping
+pub const IdStack = widget_id.IdStack;
+
+// =============================================================================
 // Layout (integrated from zlay v2.0 - 4-14x faster!)
 // =============================================================================
 
@@ -145,9 +181,6 @@ pub const layout = struct {
     /// High-performance data-oriented layout engine
     /// Performance: 0.029-0.107μs per element (validated with 31 tests)
     pub const LayoutEngine = @import("layout.zig").LayoutEngine;
-
-    /// Convenience wrapper with ID-based API
-    pub const LayoutWrapper = @import("layout.zig").LayoutWrapper;
 
     /// Flexbox style configuration
     pub const FlexStyle = @import("layout.zig").FlexStyle;
@@ -233,6 +266,6 @@ pub const platforms = struct {
 // zig build -Denable_profiling=true
 // ```
 //
-// See docs/PROFILING.md for full documentation.
+// See DESIGN.md for full documentation.
 
 pub const profiler = @import("profiler.zig");

@@ -41,7 +41,7 @@ pub const GUIConfig = struct {
 /// Main GUI manager that coordinates all subsystems
 ///
 /// State Management: Use Tracked(T) for reactive state.
-/// See docs/STATE_MANAGEMENT.md for the design rationale.
+/// See DESIGN.md for the design rationale.
 ///
 /// Example:
 /// ```zig
