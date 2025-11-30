@@ -14,6 +14,14 @@ const std = @import("std");
 const app = @import("../app.zig");
 const PlatformInterface = app.PlatformInterface;
 const Event = app.Event;
+const events = @import("../events.zig");
+const InputEvent = events.InputEvent;
+const MouseButton = events.MouseButton;
+const MouseAction = events.MouseAction;
+const Key = events.Key;
+const KeyAction = events.KeyAction;
+const KeyModifiers = events.KeyModifiers;
+const Point = @import("../core/geometry.zig").Point;
 
 // SDL function declarations - we'll link to system SDL
 extern fn SDL_Init(flags: u32) c_int;
@@ -41,13 +49,93 @@ const SDL_WINDOWEVENT = 0x200;
 const SDL_WINDOWEVENT_EXPOSED = 1;
 const SDL_WINDOWEVENT_SIZE_CHANGED = 5;
 
-// SDL Event structure (simplified)
+// SDL Mouse buttons
+const SDL_BUTTON_LEFT = 1;
+const SDL_BUTTON_MIDDLE = 2;
+const SDL_BUTTON_RIGHT = 3;
+const SDL_BUTTON_X1 = 4;
+const SDL_BUTTON_X2 = 5;
+
+// SDL Keyboard modifiers
+const KMOD_LSHIFT = 0x0001;
+const KMOD_RSHIFT = 0x0002;
+const KMOD_LCTRL = 0x0040;
+const KMOD_RCTRL = 0x0080;
+const KMOD_LALT = 0x0100;
+const KMOD_RALT = 0x0200;
+const KMOD_LGUI = 0x0400;
+const KMOD_RGUI = 0x0800;
+const KMOD_CAPS = 0x2000;
+const KMOD_NUM = 0x1000;
+
+// SDL Scancodes (subset - we'll expand as needed)
+const SDL_SCANCODE_A = 4;
+const SDL_SCANCODE_Z = 29;
+const SDL_SCANCODE_1 = 30;
+const SDL_SCANCODE_0 = 39;
+const SDL_SCANCODE_SPACE = 44;
+const SDL_SCANCODE_RETURN = 40;
+const SDL_SCANCODE_BACKSPACE = 42;
+const SDL_SCANCODE_TAB = 43;
+const SDL_SCANCODE_ESCAPE = 41;
+const SDL_SCANCODE_LEFT = 80;
+const SDL_SCANCODE_RIGHT = 79;
+const SDL_SCANCODE_UP = 82;
+const SDL_SCANCODE_DOWN = 81;
+const SDL_SCANCODE_LSHIFT = 225;
+const SDL_SCANCODE_RSHIFT = 229;
+const SDL_SCANCODE_LCTRL = 224;
+const SDL_SCANCODE_RCTRL = 228;
+const SDL_SCANCODE_LALT = 226;
+const SDL_SCANCODE_RALT = 230;
+
+// SDL Event structures
 const SDLEvent = extern struct {
     type: u32,
     timestamp: u32,
-
-    // Union data (we'll just reserve space)
     data: [56]u8 = undefined,
+};
+
+const SDLMouseButtonEvent = extern struct {
+    type: u32,
+    timestamp: u32,
+    window_id: u32,
+    which: u32,
+    button: u8,
+    state: u8,
+    clicks: u8,
+    padding: u8,
+    x: i32,
+    y: i32,
+};
+
+const SDLMouseMotionEvent = extern struct {
+    type: u32,
+    timestamp: u32,
+    window_id: u32,
+    which: u32,
+    state: u32,
+    x: i32,
+    y: i32,
+    xrel: i32,
+    yrel: i32,
+};
+
+const SDLKeyboardEvent = extern struct {
+    type: u32,
+    timestamp: u32,
+    window_id: u32,
+    state: u8,
+    repeat: u8,
+    padding: [2]u8,
+    keysym: SDLKeysym,
+};
+
+const SDLKeysym = extern struct {
+    scancode: u32,
+    sym: u32,
+    mod: u16,
+    unused: u32,
 };
 
 /// SDL Platform configuration
@@ -79,6 +167,9 @@ pub const SdlPlatform = struct {
     should_quit: bool = false,
     width: u32,
     height: u32,
+
+    // Event data storage (owned by platform, lifetime tied to event dispatch)
+    event_data_arena: std.heap.ArenaAllocator,
 
     /// Initialize SDL platform - owns window and event source
     pub fn init(allocator: std.mem.Allocator, config: SdlConfig) !SdlPlatform {
@@ -112,11 +203,13 @@ pub const SdlPlatform = struct {
             .window = window,
             .width = config.width,
             .height = config.height,
+            .event_data_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
-    
+
     /// Clean up SDL resources
     pub fn deinit(self: *SdlPlatform) void {
+        self.event_data_arena.deinit();
         if (self.window) |window| {
             SDL_DestroyWindow(window);
             self.window = null;
@@ -169,6 +262,64 @@ pub const SdlPlatform = struct {
         return self.convertSdlEvent(&sdl_event) catch null;
     }
 
+    /// Clear event data arena between frames to prevent memory buildup
+    pub fn clearEventData(self: *SdlPlatform) void {
+        _ = self.event_data_arena.reset(.retain_capacity);
+    }
+
+    // ========================================================================
+    // SDL to zig-gui type conversion helpers
+    // ========================================================================
+
+    /// Convert SDL mouse button to zig-gui MouseButton
+    fn sdlButtonToMouseButton(sdl_button: u8) MouseButton {
+        return switch (sdl_button) {
+            SDL_BUTTON_LEFT => .left,
+            SDL_BUTTON_RIGHT => .right,
+            SDL_BUTTON_MIDDLE => .middle,
+            SDL_BUTTON_X1 => .x1,
+            SDL_BUTTON_X2 => .x2,
+            else => .left, // Default to left for unknown buttons
+        };
+    }
+
+    /// Convert SDL keyboard modifiers to zig-gui KeyModifiers
+    fn sdlModToKeyModifiers(sdl_mod: u16) KeyModifiers {
+        return .{
+            .shift = (sdl_mod & (KMOD_LSHIFT | KMOD_RSHIFT)) != 0,
+            .ctrl = (sdl_mod & (KMOD_LCTRL | KMOD_RCTRL)) != 0,
+            .alt = (sdl_mod & (KMOD_LALT | KMOD_RALT)) != 0,
+            .meta = (sdl_mod & (KMOD_LGUI | KMOD_RGUI)) != 0,
+            .caps_lock = (sdl_mod & KMOD_CAPS) != 0,
+            .num_lock = (sdl_mod & KMOD_NUM) != 0,
+        };
+    }
+
+    /// Convert SDL scancode to zig-gui Key
+    fn sdlScancodeToKey(scancode: u32) Key {
+        return switch (scancode) {
+            SDL_SCANCODE_A...SDL_SCANCODE_Z => @enumFromInt(@intFromEnum(Key.a) + (scancode - SDL_SCANCODE_A)),
+            SDL_SCANCODE_1...SDL_SCANCODE_0 => blk: {
+                const offset = scancode - SDL_SCANCODE_1;
+                if (offset == 9) break :blk Key.key_0;
+                break :blk @enumFromInt(@intFromEnum(Key.key_1) + offset);
+            },
+            SDL_SCANCODE_SPACE => .space,
+            SDL_SCANCODE_RETURN => .enter,
+            SDL_SCANCODE_BACKSPACE => .backspace,
+            SDL_SCANCODE_TAB => .tab,
+            SDL_SCANCODE_ESCAPE => .escape,
+            SDL_SCANCODE_LEFT => .left,
+            SDL_SCANCODE_RIGHT => .right,
+            SDL_SCANCODE_UP => .up,
+            SDL_SCANCODE_DOWN => .down,
+            SDL_SCANCODE_LSHIFT, SDL_SCANCODE_RSHIFT => .shift,
+            SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL => .ctrl,
+            SDL_SCANCODE_LALT, SDL_SCANCODE_RALT => .alt,
+            else => .unknown,
+        };
+    }
+
     /// Convert SDL event to our internal event format
     fn convertSdlEvent(self: *SdlPlatform, sdl_event: *const SDLEvent) !Event {
         const timestamp = @as(u64, sdl_event.timestamp);
@@ -190,21 +341,76 @@ pub const SdlPlatform = struct {
                 };
             },
 
-            SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP, SDL_MOUSEMOTION => {
-                // Mouse events - might trigger UI changes
+            SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP => {
+                // Mouse button events - extract button, position, modifiers
+                const mouse_event: *const SDLMouseButtonEvent = @ptrCast(sdl_event);
+
+                const input_event = try self.event_data_arena.allocator().create(InputEvent);
+                input_event.* = .{
+                    .mouse = .{
+                        .action = if (sdl_event.type == SDL_MOUSEBUTTONDOWN) .press else .release,
+                        .button = sdlButtonToMouseButton(mouse_event.button),
+                        .position = .{
+                            .x = @floatFromInt(mouse_event.x),
+                            .y = @floatFromInt(mouse_event.y),
+                        },
+                        .modifiers = .{}, // SDL doesn't provide modifiers in mouse events
+                        .timestamp = timestamp,
+                    },
+                };
+
                 return Event{
                     .type = .input,
                     .timestamp = timestamp,
-                    .data = null, // TODO: Extract mouse data
+                    .data = input_event,
+                };
+            },
+
+            SDL_MOUSEMOTION => {
+                // Mouse motion - create mouse event with move action
+                const motion_event: *const SDLMouseMotionEvent = @ptrCast(sdl_event);
+
+                const input_event = try self.event_data_arena.allocator().create(InputEvent);
+                input_event.* = .{
+                    .mouse = .{
+                        .action = .move,
+                        .button = .left, // Not relevant for motion
+                        .position = .{
+                            .x = @floatFromInt(motion_event.x),
+                            .y = @floatFromInt(motion_event.y),
+                        },
+                        .modifiers = .{},
+                        .timestamp = timestamp,
+                    },
+                };
+
+                return Event{
+                    .type = .input,
+                    .timestamp = timestamp,
+                    .data = input_event,
                 };
             },
 
             SDL_KEYDOWN, SDL_KEYUP => {
-                // Keyboard events
+                // Keyboard events - extract key, modifiers, repeat
+                const key_event: *const SDLKeyboardEvent = @ptrCast(sdl_event);
+
+                const input_event = try self.event_data_arena.allocator().create(InputEvent);
+                input_event.* = .{
+                    .key = .{
+                        .action = if (sdl_event.type == SDL_KEYDOWN) blk: {
+                            break :blk if (key_event.repeat != 0) .repeat else .press;
+                        } else .release,
+                        .key = sdlScancodeToKey(key_event.keysym.scancode),
+                        .modifiers = sdlModToKeyModifiers(key_event.keysym.mod),
+                        .timestamp = timestamp,
+                    },
+                };
+
                 return Event{
                     .type = .input,
                     .timestamp = timestamp,
-                    .data = null, // TODO: Extract keyboard data
+                    .data = input_event,
                 };
             },
 
