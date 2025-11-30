@@ -336,10 +336,11 @@ defer engine.deinit();
 // Add elements - returns numeric index
 const root = try engine.addElement(null, .{
     .direction = .column,
-    .size = .{ .width = .{ .pixels = 800 }, .height = .{ .pixels = 600 } },
+    .width = 800,
+    .height = 600,
 });
 const header = try engine.addElement(root, .{
-    .size = .{ .height = .{ .pixels = 60 } },
+    .height = 60,
 });
 const body = try engine.addElement(root, .{
     .flex_grow = 1,
@@ -371,12 +372,12 @@ pub fn container(self: *GUI, comptime label: []const u8, style: FlexStyle) !void
 
 ```zig
 .{
-    .direction = .column,        // .row or .column
-    .justify_content = .start,   // .start, .center, .end, .space_between
-    .align_items = .stretch,     // .start, .center, .end, .stretch
-    .gap = 10,                   // Spacing between children
-    .width = 400,                // Fixed width (-1 = auto)
-    .height = -1,                // Auto height
+    .direction = .column,            // .row or .column
+    .justify_content = .flex_start,  // .flex_start, .center, .flex_end, .space_between
+    .align_items = .stretch,         // .flex_start, .center, .flex_end, .stretch
+    .gap = 10,                       // Spacing between children
+    .width = 400,                    // Fixed width (-1 = auto)
+    .height = -1,                    // Auto height
     .min_width = 0,
     .min_height = 0,
     .max_width = std.math.inf(f32),
@@ -403,7 +404,7 @@ pub fn container(self: *GUI, comptime label: []const u8, style: FlexStyle) !void
 
 ```zig
 engine.markDirty(element_index);
-engine.setStyle(element_index, .{ .size = .{ .height = .{ .pixels = 100 } } }); // Auto-marks dirty
+engine.setStyle(element_index, .{ .height = 100 }); // Auto-marks dirty
 ```
 
 ### Performance Monitoring
