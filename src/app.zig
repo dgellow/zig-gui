@@ -3,6 +3,7 @@ const tracked = @import("tracked.zig");
 const gui_mod = @import("gui.zig");
 const GUI = gui_mod.GUI;
 const GUIConfig = gui_mod.GUIConfig;
+const profiler = @import("profiler.zig");
 
 /// Execution modes for the hybrid architecture
 ///
@@ -352,10 +353,16 @@ pub fn App(comptime State: type) type {
         ///
         /// Blocks on platform.waitEvent() via vtable - true idle efficiency.
         fn runEventDriven(self: *Self, ui_function: UIFunction(State), state: *State) !void {
+            profiler.zone(@src(), "runEventDriven", .{});
+            defer profiler.endZone();
+
             // Initial render
             try self.renderFrameInternal(ui_function, state);
 
             while (self.isRunning()) {
+                profiler.frameStart();
+                defer profiler.frameEnd();
+
                 const start_time = std.time.nanoTimestamp();
 
                 // Block until event via vtable (0% CPU while waiting)
@@ -365,10 +372,16 @@ pub fn App(comptime State: type) type {
                 };
 
                 // Process the event
-                self.processEvent(event);
+                {
+                    profiler.zone(@src(), "processEvent", .{});
+                    defer profiler.endZone();
+                    self.processEvent(event);
+                }
 
                 // Only render if state changed OR explicit redraw needed
                 if (event.requiresRedraw() or tracked.stateChanged(state, &self.last_state_version)) {
+                    profiler.zone(@src(), "render", .{});
+                    defer profiler.endZone();
                     try self.renderFrameInternal(ui_function, state);
                     self.platform.present();
                 }
@@ -380,17 +393,31 @@ pub fn App(comptime State: type) type {
 
         /// Game loop execution: Continuous 60+ FPS
         fn runGameLoop(self: *Self, ui_function: UIFunction(State), state: *State) !void {
+            profiler.zone(@src(), "runGameLoop", .{});
+            defer profiler.endZone();
+
             const target_frame_time_ns: i64 = @divFloor(1_000_000_000, @as(i64, self.config.target_fps));
 
             while (self.isRunning()) {
+                profiler.frameStart();
+                defer profiler.frameEnd();
+
                 const frame_start = std.time.nanoTimestamp();
 
                 // Process all available events (non-blocking via vtable)
-                self.processEvents();
+                {
+                    profiler.zone(@src(), "processEvents", .{});
+                    defer profiler.endZone();
+                    self.processEvents();
+                }
 
                 // Always render in game loop mode
-                try self.renderFrameInternal(ui_function, state);
-                self.platform.present();
+                {
+                    profiler.zone(@src(), "render", .{});
+                    defer profiler.endZone();
+                    try self.renderFrameInternal(ui_function, state);
+                    self.platform.present();
+                }
 
                 // Frame rate limiting
                 const frame_end = std.time.nanoTimestamp();
@@ -444,9 +471,27 @@ pub fn App(comptime State: type) type {
 
         /// Render a complete frame (internal)
         fn renderFrameInternal(self: *Self, ui_function: UIFunction(State), state: *State) !void {
-            try self.gui.beginFrame();
-            try ui_function(self.gui, state);
-            try self.gui.endFrame();
+            profiler.zone(@src(), "renderFrameInternal", .{});
+            defer profiler.endZone();
+
+            {
+                profiler.zone(@src(), "GUI.beginFrame", .{});
+                defer profiler.endZone();
+                try self.gui.beginFrame();
+            }
+
+            {
+                profiler.zone(@src(), "uiFunction", .{});
+                defer profiler.endZone();
+                try ui_function(self.gui, state);
+            }
+
+            {
+                profiler.zone(@src(), "GUI.endFrame", .{});
+                defer profiler.endZone();
+                try self.gui.endFrame();
+            }
+
             self.frame_count += 1;
         }
 

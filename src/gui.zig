@@ -11,6 +11,7 @@ const EventManager = @import("events.zig").EventManager;
 const AnimationSystem = @import("animation.zig").AnimationSystem;
 const AssetManager = @import("asset.zig").AssetManager;
 const View = @import("components/view.zig").View;
+const profiler = @import("profiler.zig");
 
 /// Configuration options for GUI initialization
 pub const GUIConfig = struct {
@@ -189,6 +190,9 @@ pub const GUI = struct {
 
     /// Begin a new frame
     pub fn beginFrame(self: *GUI) !void {
+        profiler.zone(@src(), "GUI.beginFrame", .{});
+        defer profiler.endZone();
+
         self.in_frame = true;
 
         // Reset immediate-mode cursor
@@ -202,15 +206,25 @@ pub const GUI = struct {
         self.im_hot_id = 0;
 
         // Process any queued events
-        self.event_manager.processEvents();
+        {
+            profiler.zone(@src(), "EventManager.processEvents", .{});
+            defer profiler.endZone();
+            self.event_manager.processEvents();
+        }
 
         // Process asset loading requests
-        self.asset_manager.processLoadingRequests() catch |err| {
-            std.log.err("Error processing asset loading requests: {s}", .{@errorName(err)});
-        };
+        {
+            profiler.zone(@src(), "AssetManager.processLoadingRequests", .{});
+            defer profiler.endZone();
+            self.asset_manager.processLoadingRequests() catch |err| {
+                std.log.err("Error processing asset loading requests: {s}", .{@errorName(err)});
+            };
+        }
 
         // Begin renderer frame if available
         if (self.renderer) |renderer| {
+            profiler.zone(@src(), "Renderer.beginFrame", .{});
+            defer profiler.endZone();
             const frame_width: f32 = @floatFromInt(self.config.window_width);
             const frame_height: f32 = @floatFromInt(self.config.window_height);
             renderer.vtable.beginFrame(renderer, frame_width, frame_height);
@@ -219,8 +233,13 @@ pub const GUI = struct {
 
     /// End frame and present
     pub fn endFrame(self: *GUI) !void {
+        profiler.zone(@src(), "GUI.endFrame", .{});
+        defer profiler.endZone();
+
         // Calculate layout if needed
         if (self.layout_engine.needsLayout()) {
+            profiler.zone(@src(), "LayoutEngine.calculateLayout", .{});
+            defer profiler.endZone();
             if (self.root_view) |root| {
                 try self.layout_engine.calculateLayout(root);
             }
@@ -229,13 +248,19 @@ pub const GUI = struct {
         // Render if we have a renderer and root view
         if (self.renderer) |renderer| {
             if (self.root_view) |root| {
+                profiler.zone(@src(), "Renderer.paint", .{});
+                defer profiler.endZone();
                 const render_context = RenderContext{
                     .renderer = renderer,
                     .style_system = self.style_system,
                 };
                 self.paintView(root, &render_context);
             }
-            renderer.vtable.endFrame(renderer);
+            {
+                profiler.zone(@src(), "Renderer.endFrame", .{});
+                defer profiler.endZone();
+                renderer.vtable.endFrame(renderer);
+            }
         }
 
         // Update mouse state for next frame

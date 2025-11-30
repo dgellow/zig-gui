@@ -277,6 +277,56 @@ var app = try App(MyState).init(allocator, platform.interface(), .{
 // Save any file → See changes in <100ms
 ```
 
+### 📊 Zero-Cost Profiling & Tracing
+World-class profiling system inspired by Tracy, ImGui, and Flutter DevTools:
+
+```zig
+const profiler = @import("zig-gui").profiler;
+
+pub fn main() !void {
+    // Initialize profiler (no-op if disabled at compile time)
+    try profiler.init(allocator, .{});
+    defer profiler.deinit();
+
+    while (app.running) {
+        profiler.frameStart();
+        defer profiler.frameEnd();
+
+        try update(dt);
+        try render();
+    }
+
+    // Export for chrome://tracing visualization
+    try profiler.exportJSON("profile.json");
+}
+
+fn expensiveCalculation() void {
+    profiler.zone(@src(), "expensiveCalculation", .{});
+    defer profiler.endZone();
+    // Your code here - automatically timed!
+}
+```
+
+**Features:**
+- **Zero cost when disabled** — All profiling code optimized away in release builds
+- **~15-50ns overhead** when enabled — Tracy-level performance
+- **Hierarchical zones** — See nested function call stacks
+- **Frame-based analysis** — Track frame times, FPS, bottlenecks
+- **Thread-safe** — Lock-free ring buffers
+- **Chrome Tracing export** — Visualize in chrome://tracing
+- **Reusable library** — Can be used standalone in any Zig project
+
+```bash
+# Development build with profiling
+zig build -Denable_profiling=true
+zig build profiling-demo
+
+# Production build (profiling compiled away, zero overhead)
+zig build -Doptimize=ReleaseFast
+```
+
+See [docs/PROFILING.md](docs/PROFILING.md) for complete documentation.
+
 ### 🚀 World-Class C API
 Perfect for any language:
 

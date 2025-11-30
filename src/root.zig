@@ -177,3 +177,48 @@ pub const platforms = struct {
     /// SDL platform configuration (window settings)
     pub const SdlConfig = @import("platforms/sdl.zig").SdlConfig;
 };
+
+// =============================================================================
+// Profiling and Tracing
+// =============================================================================
+//
+// Zero-cost profiling system inspired by Tracy, ImGui, and Flutter DevTools.
+// - Compile-time toggleable (zero overhead when disabled)
+// - Hierarchical zone-based profiling
+// - Frame-based analysis
+// - ~15-50ns overhead per zone (when enabled)
+// - Multiple export formats (JSON, CSV, binary)
+//
+// Usage:
+// ```zig
+// const profiler = @import("zig-gui").profiler;
+//
+// pub fn main() !void {
+//     try profiler.init(allocator, .{});
+//     defer profiler.deinit();
+//
+//     while (app.running) {
+//         profiler.frameStart();
+//         defer profiler.frameEnd();
+//
+//         try render();
+//     }
+//
+//     try profiler.exportJSON("profile.json");
+// }
+//
+// fn myFunction() void {
+//     profiler.zone(@src(), "myFunction", .{});
+//     defer profiler.endZone();
+//     // Your code here
+// }
+// ```
+//
+// Build with profiling enabled:
+// ```bash
+// zig build -Denable_profiling=true
+// ```
+//
+// See docs/PROFILING.md for full documentation.
+
+pub const profiler = @import("profiler.zig");

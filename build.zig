@@ -4,6 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Profiling build option: -Denable_profiling=true
+    const enable_profiling = b.option(bool, "enable_profiling", "Enable profiling and tracing") orelse false;
+
+    // Create build options module for compile-time configuration
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_profiling", enable_profiling);
+
     // Create zlay module (our data-oriented layout engine)
     const zlay_mod = b.addModule("zlay", .{
         .root_source_file = b.path("lib/zlay/src/zlay.zig"),
@@ -14,6 +21,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
     });
     zig_gui_mod.addImport("zlay", zlay_mod);
+    zig_gui_mod.addOptions("build_options", build_options);
 
     // Create static library
     const lib = b.addStaticLibrary(.{
@@ -23,6 +31,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib.root_module.addImport("zlay", zlay_mod);
+    lib.root_module.addOptions("build_options", build_options);
     b.installArtifact(lib);
 
     // ===== Revolutionary Demo =====
@@ -83,10 +92,27 @@ pub fn build(b: *std.Build) void {
     const game_hud_step = b.step("game-hud", "Run game HUD example (game loop mode)");
     game_hud_step.dependOn(&game_hud_run.step);
 
+    // Profiling demo (demonstrates zero-cost profiling system)
+    const profiling_demo_exe = b.addExecutable(.{
+        .name = "profiling_demo",
+        .root_source_file = b.path("examples/profiling_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    profiling_demo_exe.root_module.addImport("zig-gui", zig_gui_mod);
+    b.installArtifact(profiling_demo_exe);
+
+    const profiling_demo_run = b.addRunArtifact(profiling_demo_exe);
+    profiling_demo_run.step.dependOn(b.getInstallStep());
+
+    const profiling_demo_step = b.step("profiling-demo", "Run profiling demo (zero-cost profiling system)");
+    profiling_demo_step.dependOn(&profiling_demo_run.step);
+
     // Run all examples
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&counter_run.step);
     examples_step.dependOn(&game_hud_run.step);
+    examples_step.dependOn(&profiling_demo_run.step);
 
     // ===== Tests and Benchmarks =====
 
