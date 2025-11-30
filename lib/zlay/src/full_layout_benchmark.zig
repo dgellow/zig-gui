@@ -195,9 +195,14 @@ fn benchmarkFullLayout(
     engine.resetCacheStats();
     const start = std.time.nanoTimestamp();
 
-    for (0..iterations) |_| {
+    for (0..iterations) |iter| {
+        // Vary constraints slightly to force cache invalidation
+        // This ensures we're measuring ACTUAL layout computation, not just cache hits
+        const width = 1920.0 + @as(f32, @floatFromInt(iter % 10));
+        const height = 1080.0 + @as(f32, @floatFromInt(iter % 10));
+
         // Full layout computation (all operations)
-        try engine.computeLayout(1920, 1080);
+        try engine.computeLayout(width, height);
 
         // Re-mark dirty for next iteration
         engine.dirty_queue.clear();
@@ -361,7 +366,7 @@ test "HONEST: Stress test (1000 elements, 10% dirty)" {
     try std.testing.expect(result.per_element_us < 1.0);
 }
 
-/// Summary of all benchmarks
+// Summary of all benchmarks
 test "HONEST: Benchmark summary and validation" {
     std.debug.print("\n╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║ HONEST BENCHMARK VALIDATION SUMMARY                          ║\n", .{});

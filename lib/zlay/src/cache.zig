@@ -4,10 +4,9 @@
 //! We cache layout results keyed by constraints and style version.
 
 const std = @import("std");
-const core = @import("../../../src/root.zig").core;
+const core = @import("core.zig");
 
 const Size = core.Size;
-const Rect = core.Rect;
 
 /// Cache entry for a single element's layout result
 ///
@@ -26,7 +25,7 @@ pub const LayoutCacheEntry = struct {
 
     /// Cache metadata
     valid: bool = false,
-    _padding: [7]u8 = undefined,  // Align to 48 bytes
+    _padding: [23]u8 = undefined,  // Pad to 48 bytes for cache efficiency
 
     /// Check if cache entry is valid for given inputs
     pub inline fn isValid(

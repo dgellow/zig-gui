@@ -56,7 +56,7 @@ pub const LayoutEngine = struct {
     cache_stats: CacheStats,
 
     pub fn init(allocator: std.mem.Allocator) !LayoutEngine {
-        var arena = std.heap.ArenaAllocator.init(allocator);
+        const arena = std.heap.ArenaAllocator.init(allocator);
 
         return LayoutEngine{
             .allocator = allocator,
@@ -265,7 +265,7 @@ pub const LayoutEngine = struct {
         }
 
         // Allocate results
-        var children_results = try self.arena.allocator().alloc(LayoutResult, child_count);
+        const children_results = try self.arena.allocator().alloc(LayoutResult, child_count);
         defer self.arena.allocator().free(children_results);
 
         // Compute flexbox layout (this uses our validated algorithm + SIMD)

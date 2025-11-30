@@ -47,7 +47,7 @@ pub const FlexStyle = struct {
 
     gap: f32 = 0.0,
 
-    _padding: u32 = 0,  // Align to 32 bytes
+    _padding: [16]u8 = undefined,  // Pad to 56 bytes for cache efficiency
 
     comptime {
         const size = @sizeOf(FlexStyle);
@@ -121,7 +121,7 @@ pub fn computeFlexLayout(
 
     // Step 1: Determine base sizes
     var total_base_size: f32 = 0;
-    var total_gap: f32 = if (child_count > 1)
+    const total_gap: f32 = if (child_count > 1)
         container_style.gap * @as(f32, @floatFromInt(child_count - 1))
     else
         0;
