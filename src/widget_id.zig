@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 /// Widget identifier - a 4-byte hash for tracking widget identity.
 ///
@@ -88,66 +87,36 @@ pub const IdStack = struct {
     /// Current combined hash of all pushed IDs
     current_hash: u32 = 0,
 
-    /// Debug-only: path of string labels for collision diagnostics
-    debug_path: DebugPath = if (is_debug) .{} else {},
-
-    /// Debug-only: allocator for path strings
-    debug_allocator: DebugAllocator = if (is_debug) null else {},
-
     const Self = @This();
     const MAX_DEPTH: usize = 16;
 
-    const is_debug = builtin.mode == .Debug;
-    const DebugPath = if (is_debug) std.ArrayList([]const u8) else void;
-    const DebugAllocator = if (is_debug) ?std.mem.Allocator else void;
-
     /// Initialize an ID stack.
-    /// In debug mode, allocator is used for path tracking.
+    /// In debug mode, allocator is used for path tracking (currently unused).
     pub fn init(allocator: ?std.mem.Allocator) Self {
-        var self = Self{};
-        if (is_debug) {
-            self.debug_allocator = allocator;
-            if (allocator) |alloc| {
-                self.debug_path = std.ArrayList([]const u8).init(alloc);
-            }
-        }
-        return self;
+        _ = allocator; // Reserved for future debug path tracking
+        return Self{};
     }
 
-    /// Clean up resources (debug mode only).
+    /// Clean up resources.
     pub fn deinit(self: *Self) void {
-        if (is_debug) {
-            if (self.debug_allocator != null) {
-                self.debug_path.deinit();
-            }
-        }
+        _ = self; // No resources to clean up currently
     }
 
     /// Push a string ID onto the stack (comptime version - zero cost hash).
     pub fn push(self: *Self, comptime label: []const u8) void {
         self.pushHash(comptime @as(u32, @truncate(std.hash.Wyhash.hash(0, label))));
-        if (is_debug) {
-            if (self.debug_allocator != null) {
-                self.debug_path.append(label) catch {};
-            }
-        }
     }
 
     /// Push a runtime string ID onto the stack.
     pub fn pushRuntime(self: *Self, label: []const u8) void {
         self.pushHash(@as(u32, @truncate(std.hash.Wyhash.hash(0, label))));
-        if (is_debug) {
-            if (self.debug_allocator != null) {
-                self.debug_path.append(label) catch {};
-            }
-        }
     }
 
     /// Push an index onto the stack (for loops).
+    /// Note: Uses (index + 1) to ensure index 0 produces a non-zero hash contribution.
     pub fn pushIndex(self: *Self, index: usize) void {
-        self.pushHash(@as(u32, @truncate(index)));
-        // Note: In debug mode, we could store the index as a string,
-        // but for now we just skip it in the path
+        // Add 1 so index 0 still produces a unique hash
+        self.pushHash(@as(u32, @truncate(index +% 1)));
     }
 
     /// Push a WidgetId onto the stack.
@@ -180,23 +149,12 @@ pub const IdStack = struct {
 
         self.depth -= 1;
         self.current_hash = self.stack[self.depth];
-
-        if (is_debug) {
-            if (self.debug_allocator != null and self.debug_path.items.len > 0) {
-                _ = self.debug_path.pop();
-            }
-        }
     }
 
     /// Clear the stack to initial state.
     pub fn clear(self: *Self) void {
         self.depth = 0;
         self.current_hash = 0;
-        if (is_debug) {
-            if (self.debug_allocator != null) {
-                self.debug_path.clearRetainingCapacity();
-            }
-        }
     }
 
     /// Combine the current stack hash with a widget ID.
@@ -221,41 +179,12 @@ pub const IdStack = struct {
         return self.current_hash;
     }
 
-    /// Get debug path as string (debug builds only).
-    /// Returns empty string in release builds.
+    /// Get debug path as string.
+    /// Note: Debug path tracking not yet implemented - returns empty string.
+    /// Reserved for future collision diagnostics feature.
     pub fn getDebugPath(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
-        if (!is_debug) {
-            return allocator.alloc(u8, 0);
-        }
-
-        if (self.debug_allocator == null or self.debug_path.items.len == 0) {
-            return allocator.alloc(u8, 0);
-        }
-
-        // Calculate total length
-        var total_len: usize = 0;
-        for (self.debug_path.items, 0..) |item, i| {
-            total_len += item.len;
-            if (i < self.debug_path.items.len - 1) {
-                total_len += 3; // " > "
-            }
-        }
-
-        // Build the path string
-        var result = try allocator.alloc(u8, total_len);
-        var offset: usize = 0;
-
-        for (self.debug_path.items, 0..) |item, i| {
-            @memcpy(result[offset .. offset + item.len], item);
-            offset += item.len;
-
-            if (i < self.debug_path.items.len - 1) {
-                @memcpy(result[offset .. offset + 3], " > ");
-                offset += 3;
-            }
-        }
-
-        return result;
+        _ = self;
+        return allocator.alloc(u8, 0);
     }
 };
 
@@ -455,9 +384,8 @@ test "IdStack pushId" {
     try std.testing.expectEqual(expected_hash, stack.getCurrentHash());
 }
 
-test "IdStack debug path in debug mode" {
-    // This test verifies debug functionality doesn't crash
-    // Actual path content depends on build mode
+test "IdStack getDebugPath returns empty (not yet implemented)" {
+    // Debug path tracking is reserved for future implementation
     var stack = IdStack.init(std.testing.allocator);
     defer stack.deinit();
 
@@ -467,13 +395,8 @@ test "IdStack debug path in debug mode" {
     const path = try stack.getDebugPath(std.testing.allocator);
     defer std.testing.allocator.free(path);
 
-    // In debug mode, path should be "parent > child"
-    // In release mode, path is empty
-    if (builtin.mode == .Debug) {
-        try std.testing.expectEqualStrings("parent > child", path);
-    } else {
-        try std.testing.expectEqual(@as(usize, 0), path.len);
-    }
+    // Currently returns empty string (feature not yet implemented)
+    try std.testing.expectEqual(@as(usize, 0), path.len);
 }
 
 test "IdStack real-world usage pattern" {
