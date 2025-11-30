@@ -32,10 +32,25 @@ extern fn SDL_WaitEvent(event: *SDLEvent) c_int;
 extern fn SDL_PollEvent(event: *SDLEvent) c_int;
 extern fn SDL_GetError() [*:0]const u8;
 
+// SDL OpenGL functions
+extern fn SDL_GL_CreateContext(window: ?*anyopaque) ?*anyopaque;
+extern fn SDL_GL_DeleteContext(context: ?*anyopaque) void;
+extern fn SDL_GL_SwapWindow(window: ?*anyopaque) void;
+extern fn SDL_GL_SetAttribute(attr: c_int, value: c_int) c_int;
+extern fn SDL_GL_SetSwapInterval(interval: c_int) c_int;
+
 // SDL Constants
 const SDL_INIT_VIDEO = 0x00000020;
 const SDL_WINDOW_SHOWN = 0x00000004;
 const SDL_WINDOW_RESIZABLE = 0x00000020;
+const SDL_WINDOW_OPENGL = 0x00000002;
+
+// SDL GL attributes
+const SDL_GL_CONTEXT_MAJOR_VERSION = 17;
+const SDL_GL_CONTEXT_MINOR_VERSION = 18;
+const SDL_GL_CONTEXT_PROFILE_MASK = 21;
+const SDL_GL_CONTEXT_PROFILE_CORE = 0x0001;
+const SDL_GL_DOUBLEBUFFER = 5;
 
 // SDL Event types
 const SDL_QUIT = 0x100;
@@ -164,6 +179,7 @@ pub const SdlConfig = struct {
 pub const SdlPlatform = struct {
     allocator: std.mem.Allocator,
     window: ?*anyopaque = null,
+    gl_context: ?*anyopaque = null,
     should_quit: bool = false,
     width: u32,
     height: u32,
@@ -179,8 +195,14 @@ pub const SdlPlatform = struct {
             return error.SdlInitFailed;
         }
 
-        // Create window
-        const window_flags = SDL_WINDOW_SHOWN | if (config.resizable) SDL_WINDOW_RESIZABLE else 0;
+        // Set OpenGL attributes before window creation
+        _ = SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        _ = SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        _ = SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        _ = SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+        // Create window with OpenGL support
+        const window_flags = SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | (if (config.resizable) SDL_WINDOW_RESIZABLE else 0);
         const window = SDL_CreateWindow(
             config.title.ptr,
             100, // x position
@@ -196,11 +218,24 @@ pub const SdlPlatform = struct {
             return error.SdlWindowCreationFailed;
         }
 
-        std.log.info("SDL Platform initialized: {}x{} window", .{ config.width, config.height });
+        // Create OpenGL context
+        const gl_context = SDL_GL_CreateContext(window);
+        if (gl_context == null) {
+            std.log.err("SDL_GL_CreateContext failed: {s}", .{SDL_GetError()});
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+            return error.SdlGLContextFailed;
+        }
+
+        // Enable vsync for smoother rendering
+        _ = SDL_GL_SetSwapInterval(1);
+
+        std.log.info("SDL Platform initialized: {}x{} window with OpenGL 3.3 Core", .{ config.width, config.height });
 
         return SdlPlatform{
             .allocator = allocator,
             .window = window,
+            .gl_context = gl_context,
             .width = config.width,
             .height = config.height,
             .event_data_arena = std.heap.ArenaAllocator.init(allocator),
@@ -210,6 +245,10 @@ pub const SdlPlatform = struct {
     /// Clean up SDL resources
     pub fn deinit(self: *SdlPlatform) void {
         self.event_data_arena.deinit();
+        if (self.gl_context) |context| {
+            SDL_GL_DeleteContext(context);
+            self.gl_context = null;
+        }
         if (self.window) |window| {
             SDL_DestroyWindow(window);
             self.window = null;
@@ -429,10 +468,11 @@ pub const SdlPlatform = struct {
         return self.should_quit;
     }
 
-    /// Present/swap buffers (for future rendering integration)
+    /// Present/swap buffers - swap the OpenGL back buffer to front
     pub fn present(self: *SdlPlatform) void {
-        _ = self;
-        // TODO: SDL_GL_SwapWindow or software buffer present
+        if (self.window) |window| {
+            SDL_GL_SwapWindow(window);
+        }
     }
 
     // ========================================================================
