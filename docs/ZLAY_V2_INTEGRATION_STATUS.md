@@ -1,39 +1,31 @@
-# zlay v2.0 Integration Status
+# Layout Engine Integration Status
 
-**Status:** Core imports complete, View-based API adaptation layer needed
+**Status:** Merging zlay v2.0 into src/layout/ for tighter integration
+**Approach:** Move zlay implementation into zig-gui, optimize for immediate-mode API
 
 ## What's Done ✅
 
-1. **layout.zig replaced** - Thin wrapper importing zlay v2.0 (143 lines)
-2. **GUI.zig imports updated** - Using zlay v2.0 LayoutEngine
-3. **root.zig exports updated** - Exporting zlay v2.0 types
-4. **docs/LAYOUT.md created** - Usage guide for new API
-5. **Committed and pushed** - Breaking changes committed
+1. ✅ **Validated performance** - 0.029-0.107μs per element (4-14x faster, 31 tests passing)
+2. ✅ **Design decision** - Pure ID-based immediate-mode API (spec-compliant)
+3. ✅ **Architecture analysis** - Multi-paradigm hybrid (immediate API + retained optimizations)
+4. ✅ **Merge plan created** - docs/ZLAY_MERGE_PLAN.md (integrate zlay into src/layout/)
+5. ✅ **Breaking changes committed** - Old layout.zig removed (802 lines)
 
 ## Remaining Work 🔧
 
-### View-based API Adaptation Layer
+### Phase 1: Merge zlay into src/layout/
 
-**Problem:** GUI.zig expects View-based layout API, but zlay v2.0 uses index-based API.
+**Goal:** Integrate layout engine directly into zig-gui for tighter optimization
 
-**Current GUI.zig calls:**
-```zig
-// Line 190, 302
-self.layout_engine.markDirty(view);  // Expects *View
+**Tasks:**
+1. Create `src/layout/` directory structure
+2. Copy zlay files: engine.zig, flexbox.zig, cache.zig, dirty_tracking.zig, simd.zig
+3. Update imports (use zig-gui core types directly)
+4. Create `src/layout/wrapper.zig` (ID-based immediate-mode API)
+5. Update `src/layout.zig` to re-export layout modules
+6. Update `lib/zlay/README.md` (note implementation moved)
 
-// Line 246
-if (self.layout_engine.needsLayout()) { ... }  // Returns bool
-
-// Line 250
-try self.layout_engine.calculateLayout(root);  // Expects root *View
-```
-
-**New zlay v2.0 API:**
-```zig
-markDirty(index: u32)              // Expects element index
-getDirtyCount() usize              // Returns count, not bool
-computeLayout(width, height)       // Expects dimensions, not root
-```
+**See:** docs/ZLAY_MERGE_PLAN.md for complete plan
 
 ### Solution: Pure ID-Based (Spec-Compliant)
 
@@ -119,16 +111,23 @@ pub const LayoutWrapper = struct {
 
 ## Next Steps
 
-**Decision:** Pure ID-Based (per spec alignment analysis)
+**Approach:** Merge zlay into zig-gui, then implement immediate-mode API
 
-1. ✅ **Review spec.md** - DONE (see SPEC_ALIGNMENT_ANALYSIS.md)
-2. ✅ **Make decision** - DONE (Pure ID-Based is spec-compliant)
-3. **Implement LayoutWrapper enhancements** - Nesting stack, ID tracking
-4. **Delete View-based code** - src/components/view.zig and references
-5. **Update GUI to immediate-mode API** - button(id, text), etc.
-6. **Create spec-matching examples** - Todo, Email, Game HUD
-7. **Validate performance** - Ensure ID tracking has no overhead
-8. **Update documentation** - Reflect immediate-mode API
+### Phase 1: Merge Layout Engine (Current)
+1. ✅ **Review spec.md** - DONE (multi-paradigm hybrid architecture)
+2. ✅ **Make decision** - DONE (Pure ID-based, merge into src/layout/)
+3. ✅ **Create merge plan** - DONE (docs/ZLAY_MERGE_PLAN.md)
+4. **Execute merge** - Copy zlay to src/layout/, update imports
+5. **Create LayoutWrapper** - ID-based API with nesting stack
+6. **Test merge** - Ensure layout still works
+
+### Phase 2: Immediate-Mode API
+7. **Delete View-based code** - src/components/view.zig and references
+8. **Update GUI methods** - button(id, text), container(id, style, fn)
+9. **Frame lifecycle** - beginFrame/endFrame in App
+10. **Create examples** - Todo, Email, Game HUD (matching spec)
+11. **Validate performance** - Ensure no regression from ID tracking
+12. **Update documentation** - Reflect immediate-mode API
 
 ## Breaking Changes Summary
 
@@ -153,4 +152,4 @@ pub const LayoutWrapper = struct {
 
 ---
 
-**Current status:** Core imports complete. Next: Delete View scaffold and implement spec-compliant immediate-mode API.
+**Current status:** Decision made to merge zlay into src/layout/ for tighter integration. Next: Execute merge, create LayoutWrapper with ID-based API, then implement immediate-mode GUI methods.
