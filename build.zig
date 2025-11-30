@@ -108,6 +108,21 @@ pub fn build(b: *std.Build) void {
     const profiling_demo_step = b.step("profiling-demo", "Run profiling demo (zero-cost profiling system)");
     profiling_demo_step.dependOn(&profiling_demo_run.step);
 
+    // Rendering benchmark (software renderer with actual pixel drawing)
+    const rendering_benchmark_exe = b.addExecutable(.{
+        .name = "rendering_benchmark",
+        .root_source_file = b.path("examples/rendering_benchmark.zig"),
+        .target = target,
+        .optimize = .ReleaseFast, // Always optimize for accurate benchmarks
+    });
+    b.installArtifact(rendering_benchmark_exe);
+
+    const rendering_benchmark_run = b.addRunArtifact(rendering_benchmark_exe);
+    rendering_benchmark_run.step.dependOn(b.getInstallStep());
+
+    const rendering_benchmark_step = b.step("rendering-benchmark", "Run rendering benchmark (actual pixel drawing)");
+    rendering_benchmark_step.dependOn(&rendering_benchmark_run.step);
+
     // Run all examples
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&counter_run.step);
