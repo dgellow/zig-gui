@@ -8,3 +8,4 @@ zig-out
 *.lib
 
 **/.claude/settings.local.json
+profile.json

@@ -131,26 +131,41 @@ pub const ImageFormat = @import("core/image.zig").ImageFormat;
 pub const FontHandle = @import("core/font.zig").FontHandle;
 
 // =============================================================================
-// Components
+// Components (moved to immediate-mode API - see spec.md)
 // =============================================================================
-
-pub const components = struct {
-    pub const View = @import("components/view.zig").View;
-    pub const Container = @import("components/container.zig").Container;
-    pub const Box = @import("components/box.zig").Box;
-};
+//
+// Old retained-mode components (View, Container, Box) removed.
+// New immediate-mode API coming: gui.button(id, text), gui.container(id, style, fn), etc.
 
 // =============================================================================
-// Layout
+// Layout (integrated from zlay v2.0 - 4-14x faster!)
 // =============================================================================
 
 pub const layout = struct {
+    /// High-performance data-oriented layout engine
+    /// Performance: 0.029-0.107μs per element (validated with 31 tests)
     pub const LayoutEngine = @import("layout.zig").LayoutEngine;
-    pub const LayoutParams = @import("layout.zig").LayoutParams;
+
+    /// Convenience wrapper with ID-based API
+    pub const LayoutWrapper = @import("layout.zig").LayoutWrapper;
+
+    /// Flexbox style configuration
+    pub const FlexStyle = @import("layout.zig").FlexStyle;
+
+    /// Flexbox direction
     pub const FlexDirection = @import("layout.zig").FlexDirection;
+
+    /// Main axis alignment
     pub const JustifyContent = @import("layout.zig").JustifyContent;
+
+    /// Cross axis alignment
     pub const AlignItems = @import("layout.zig").AlignItems;
-    pub const Alignment = @import("layout.zig").Alignment;
+
+    /// Layout result
+    pub const LayoutResult = @import("layout.zig").LayoutResult;
+
+    /// Cache statistics
+    pub const CacheStats = @import("layout.zig").CacheStats;
 };
 
 // =============================================================================
@@ -159,7 +174,6 @@ pub const layout = struct {
 
 pub const events = struct {
     pub const EventManager = @import("events.zig").EventManager;
-    pub const UIEvent = @import("events.zig").UIEvent;
     pub const InputEvent = @import("events.zig").InputEvent;
     pub const Key = @import("events.zig").Key;
     pub const MouseButton = @import("events.zig").MouseButton;
@@ -177,3 +191,48 @@ pub const platforms = struct {
     /// SDL platform configuration (window settings)
     pub const SdlConfig = @import("platforms/sdl.zig").SdlConfig;
 };
+
+// =============================================================================
+// Profiling and Tracing
+// =============================================================================
+//
+// Zero-cost profiling system inspired by Tracy, ImGui, and Flutter DevTools.
+// - Compile-time toggleable (zero overhead when disabled)
+// - Hierarchical zone-based profiling
+// - Frame-based analysis
+// - ~15-50ns overhead per zone (when enabled)
+// - Multiple export formats (JSON, CSV, binary)
+//
+// Usage:
+// ```zig
+// const profiler = @import("zig-gui").profiler;
+//
+// pub fn main() !void {
+//     try profiler.init(allocator, .{});
+//     defer profiler.deinit();
+//
+//     while (app.running) {
+//         profiler.frameStart();
+//         defer profiler.frameEnd();
+//
+//         try render();
+//     }
+//
+//     try profiler.exportJSON("profile.json");
+// }
+//
+// fn myFunction() void {
+//     profiler.zone(@src(), "myFunction", .{});
+//     defer profiler.endZone();
+//     // Your code here
+// }
+// ```
+//
+// Build with profiling enabled:
+// ```bash
+// zig build -Denable_profiling=true
+// ```
+//
+// See docs/PROFILING.md for full documentation.
+
+pub const profiler = @import("profiler.zig");

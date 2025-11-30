@@ -3,6 +3,7 @@ const tracked = @import("tracked.zig");
 const gui_mod = @import("gui.zig");
 const GUI = gui_mod.GUI;
 const GUIConfig = gui_mod.GUIConfig;
+const profiler = @import("profiler.zig");
 
 /// Execution modes for the hybrid architecture
 ///
@@ -145,6 +146,7 @@ pub const HeadlessPlatform = struct {
     max_frames: u32 = 1,
     injected_events: std.BoundedArray(Event, 64) = .{},
     render_calls: u32 = 0,
+    quit_sent: bool = false,
 
     pub fn init() HeadlessPlatform {
         return .{};
@@ -192,11 +194,13 @@ pub const HeadlessPlatform = struct {
             return self.injected_events.orderedRemove(0);
         }
 
-        // Otherwise, count frames and return quit when done
-        self.frame_count += 1;
-        if (self.frame_count > self.max_frames) {
+        // Check if we've exceeded max_frames
+        if (self.frame_count >= self.max_frames) {
             return Event{ .type = .quit };
         }
+
+        // Increment frame count for event-driven mode (each wait is a frame)
+        self.frame_count += 1;
         return Event{ .type = .redraw_needed };
     }
 
@@ -206,12 +210,23 @@ pub const HeadlessPlatform = struct {
         if (self.injected_events.len > 0) {
             return self.injected_events.orderedRemove(0);
         }
+
+        // Check if we've exceeded max_frames (for game loop mode)
+        // Only send quit event ONCE to avoid infinite loop in processEvents()
+        if (self.frame_count >= self.max_frames and !self.quit_sent) {
+            self.quit_sent = true;
+            return Event{ .type = .quit };
+        }
+
         return null;
     }
 
     fn presentImpl(ptr: *anyopaque) void {
         const self: *HeadlessPlatform = @ptrCast(@alignCast(ptr));
         self.render_calls += 1;
+
+        // Increment frame count on present (once per frame)
+        self.frame_count += 1;
     }
 };
 
@@ -338,10 +353,16 @@ pub fn App(comptime State: type) type {
         ///
         /// Blocks on platform.waitEvent() via vtable - true idle efficiency.
         fn runEventDriven(self: *Self, ui_function: UIFunction(State), state: *State) !void {
+            profiler.zone(@src(), "runEventDriven", .{});
+            defer profiler.endZone();
+
             // Initial render
             try self.renderFrameInternal(ui_function, state);
 
             while (self.isRunning()) {
+                profiler.frameStart();
+                defer profiler.frameEnd();
+
                 const start_time = std.time.nanoTimestamp();
 
                 // Block until event via vtable (0% CPU while waiting)
@@ -351,10 +372,16 @@ pub fn App(comptime State: type) type {
                 };
 
                 // Process the event
-                self.processEvent(event);
+                {
+                    profiler.zone(@src(), "processEvent", .{});
+                    defer profiler.endZone();
+                    self.processEvent(event);
+                }
 
                 // Only render if state changed OR explicit redraw needed
                 if (event.requiresRedraw() or tracked.stateChanged(state, &self.last_state_version)) {
+                    profiler.zone(@src(), "render", .{});
+                    defer profiler.endZone();
                     try self.renderFrameInternal(ui_function, state);
                     self.platform.present();
                 }
@@ -366,17 +393,31 @@ pub fn App(comptime State: type) type {
 
         /// Game loop execution: Continuous 60+ FPS
         fn runGameLoop(self: *Self, ui_function: UIFunction(State), state: *State) !void {
+            profiler.zone(@src(), "runGameLoop", .{});
+            defer profiler.endZone();
+
             const target_frame_time_ns: i64 = @divFloor(1_000_000_000, @as(i64, self.config.target_fps));
 
             while (self.isRunning()) {
+                profiler.frameStart();
+                defer profiler.frameEnd();
+
                 const frame_start = std.time.nanoTimestamp();
 
                 // Process all available events (non-blocking via vtable)
-                self.processEvents();
+                {
+                    profiler.zone(@src(), "processEvents", .{});
+                    defer profiler.endZone();
+                    self.processEvents();
+                }
 
                 // Always render in game loop mode
-                try self.renderFrameInternal(ui_function, state);
-                self.platform.present();
+                {
+                    profiler.zone(@src(), "render", .{});
+                    defer profiler.endZone();
+                    try self.renderFrameInternal(ui_function, state);
+                    self.platform.present();
+                }
 
                 // Frame rate limiting
                 const frame_end = std.time.nanoTimestamp();
@@ -430,9 +471,27 @@ pub fn App(comptime State: type) type {
 
         /// Render a complete frame (internal)
         fn renderFrameInternal(self: *Self, ui_function: UIFunction(State), state: *State) !void {
-            try self.gui.beginFrame();
-            try ui_function(self.gui, state);
-            try self.gui.endFrame();
+            profiler.zone(@src(), "renderFrameInternal", .{});
+            defer profiler.endZone();
+
+            {
+                profiler.zone(@src(), "GUI.beginFrame", .{});
+                defer profiler.endZone();
+                try self.gui.beginFrame();
+            }
+
+            {
+                profiler.zone(@src(), "uiFunction", .{});
+                defer profiler.endZone();
+                try ui_function(self.gui, state);
+            }
+
+            {
+                profiler.zone(@src(), "GUI.endFrame", .{});
+                defer profiler.endZone();
+                try self.gui.endFrame();
+            }
+
             self.frame_count += 1;
         }
 
