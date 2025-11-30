@@ -452,6 +452,8 @@ test "profiler nested zones" {
 }
 
 test "profiler frame tracking" {
+    if (!enabled) return error.SkipZigTest;
+
     try init(std.testing.allocator, .{});
     defer deinit();
 

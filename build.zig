@@ -149,6 +149,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    cpu_tests.root_module.addOptions("build_options", build_options);
 
     const run_cpu_tests = b.addRunArtifact(cpu_tests);
 
@@ -175,4 +176,23 @@ pub fn build(b: *std.Build) void {
 
     const benchmark_step = b.step("benchmark", "Run performance benchmarks");
     benchmark_step.dependOn(&benchmark_run.step);
+
+    // ===== Profiling Tools =====
+
+    // Profile viewer - ASCII art flamechart analyzer
+    const profile_viewer_exe = b.addExecutable(.{
+        .name = "profile_viewer",
+        .root_source_file = b.path("tools/profile_viewer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(profile_viewer_exe);
+
+    const profile_viewer_run = b.addRunArtifact(profile_viewer_exe);
+    if (b.args) |args| {
+        profile_viewer_run.addArgs(args);
+    }
+
+    const profile_viewer_step = b.step("profile-viewer", "Build and run profile viewer tool");
+    profile_viewer_step.dependOn(&profile_viewer_run.step);
 }
