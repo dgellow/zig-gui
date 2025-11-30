@@ -181,17 +181,15 @@ Result: [✅ EXCELLENT / ✅ GOOD / ⚠️  MARGINAL / ❌ NEEDS OPTIMIZATION]
 ### Commands
 
 ```bash
-# Run all v2.0 tests (components + integration)
-cd lib/zlay
-zig test src/zlay.zig --test-filter "v2"
+# Run all layout tests
+zig build test
 
-# Run HONEST full-layout benchmarks
-zig test src/full_layout_benchmark.zig -O ReleaseFast
+# Run layout engine tests directly
+zig test src/layout/engine.zig -O ReleaseFast
 
 # Expected output:
 # - Component validations (confirmed)
-# - Full layout benchmarks (NEW - never measured before)
-# - Honest comparison to Taffy/Yoga
+# - Full layout benchmarks
 # - Cache hit rates
 # - Realistic per-element times
 ```

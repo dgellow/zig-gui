@@ -25,7 +25,7 @@ After comprehensive research of state-of-the-art layout engines (Yoga, Taffy, Cl
 #### 1. **Structure-of-Arrays (SoA) Foundation** ✅
 
 ```zig
-// lib/zlay/src/layout_engine.zig:139-160
+// src/layout/layout_engine.zig:139-160
 pub const LayoutEngine = struct {
     // HOT DATA: Accessed during every layout computation
     element_types: [MAX_ELEMENTS]ElementType,
@@ -53,7 +53,7 @@ pub const LayoutEngine = struct {
 #### 2. **Compile-Time Size Validation** ✅
 
 ```zig
-// lib/zlay/src/layout_engine.zig:49-63
+// src/layout/layout_engine.zig:49-63
 comptime {
     const size = @sizeOf(LayoutStyle);
     if (size != 32) {
@@ -73,7 +73,7 @@ comptime {
 #### 3. **Frame Arena Allocator** ✅
 
 ```zig
-// lib/zlay/src/context.zig:87
+// src/layout/context.zig:87
 frame_arena: std.heap.ArenaAllocator,
 ```
 
@@ -94,7 +94,7 @@ frame_arena: std.heap.ArenaAllocator,
 
 **Current State:**
 ```zig
-// lib/zlay/src/layout_engine.zig:162
+// src/layout/layout_engine.zig:162
 dirty_flags: [MAX_ELEMENTS]bool = undefined,
 ```
 
@@ -140,7 +140,7 @@ const DirtyQueue = struct {
 
 **Current State:**
 ```zig
-// lib/zlay/src/layout_engine.zig:163
+// src/layout/layout_engine.zig:163
 layout_cache: [MAX_ELEMENTS]LayoutCacheEntry = undefined,
 ```
 
@@ -202,7 +202,7 @@ pub fn getCachedLayout(
 
 **Current State:**
 ```zig
-// lib/zlay/src/layout_algorithm.zig:217-221
+// src/layout/layout_algorithm.zig:217-221
 for (ctx.elements.items, 0..) |element, i| {
     if (element.parent != null and element.parent.? == container_idx) {
         try children.append(i);
@@ -259,7 +259,7 @@ pub fn clampSizes(
 
 **Current State:**
 ```zig
-// lib/zlay/src/layout_engine.zig:18
+// src/layout/layout_engine.zig:18
 pub const MAX_ELEMENTS = 4096;
 ```
 
@@ -468,7 +468,7 @@ test "layout performance: <5μs per element" {
 #### 2. **Cache Efficiency (via perf)**
 
 ```bash
-perf stat -e cache-misses,cache-references zig test lib/zlay/src/layout.zig
+perf stat -e cache-misses,cache-references zig test src/layout/layout.zig
 ```
 
 **Target:** <5% cache miss rate

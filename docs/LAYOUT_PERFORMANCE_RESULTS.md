@@ -355,8 +355,8 @@ At **0.007μs per element**, we're measuring **SIMD constraint clamping only**, 
 Run the complete benchmark suite:
 
 ```bash
-cd lib/zlay
-zig test src/performance_validation.zig
+zig build test
+# Or specifically: zig test src/layout/engine.zig
 ```
 
 Expected output:

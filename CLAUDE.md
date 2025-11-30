@@ -876,7 +876,7 @@ Claim: 4-14x faster         ✅ HONEST - same operations!
 
 ### Reference Implementation: zlay v2.0
 
-See [lib/zlay/HONEST_VALIDATION_RESULTS.md](lib/zlay/HONEST_VALIDATION_RESULTS.md) for the gold standard of honest validation:
+See [docs/LAYOUT_PERFORMANCE_RESULTS.md](docs/LAYOUT_PERFORMANCE_RESULTS.md) for the gold standard of honest validation:
 
 **What we did right:**
 - ✅ Measured ALL operations (tree traversal, cache, flexbox, SIMD, positioning)
@@ -899,9 +899,8 @@ Status: ✅ VALIDATED with 31 tests passing
 ```
 
 **All benchmarks available:**
-- Component benchmarks: `lib/zlay/src/performance_validation.zig`
-- Full-layout benchmarks: `lib/zlay/src/full_layout_benchmark.zig`
-- Run: `zig test lib/zlay/src/full_layout_benchmark.zig -O ReleaseFast`
+- Layout engine: `src/layout/engine.zig`
+- Run: `zig build test` or `zig test src/layout/engine.zig -O ReleaseFast`
 
 ### Enforcement
 

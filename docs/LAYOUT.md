@@ -4,7 +4,7 @@
 **Memory:** 176 bytes per element (2x better than target)
 **Status:** ✅ VALIDATED with 31 tests passing
 
-See `lib/zlay/HONEST_VALIDATION_RESULTS.md` for complete validation.
+See `docs/LAYOUT_PERFORMANCE_RESULTS.md` for complete validation.
 
 ---
 
@@ -311,13 +311,11 @@ pub fn buildGameHud(engine: *layout.LayoutEngine) !void {
 Run the validated benchmarks yourself:
 
 ```bash
-cd lib/zlay
+# Run layout tests
+zig build test
 
-# Component benchmarks
-zig test src/performance_validation.zig -O ReleaseFast
-
-# Full-layout benchmarks
-zig test src/full_layout_benchmark.zig -O ReleaseFast
+# Or run specific layout tests
+zig test src/layout/engine.zig -O ReleaseFast
 ```
 
 **Expected output:**
@@ -334,10 +332,10 @@ Status: ✅ VALIDATED with 31 tests passing
 
 ## References
 
-- **Validation Results:** `lib/zlay/HONEST_VALIDATION_RESULTS.md`
-- **Architecture:** `lib/zlay/docs/ARCHITECTURE.md`
-- **Implementation:** `lib/zlay/src/layout_engine_v2.zig`
-- **Benchmarks:** `lib/zlay/src/full_layout_benchmark.zig`
+- **Validation Results:** `docs/LAYOUT_PERFORMANCE_RESULTS.md`
+- **Architecture:** `docs/LAYOUT_ARCHITECTURE.md`
+- **Implementation:** `src/layout/engine.zig`
+- **Design Analysis:** `docs/LAYOUT_DESIGN_ANALYSIS.md`
 - **Honesty Principles:** `CLAUDE.md` (Honest Validation Principles)
 
 ---

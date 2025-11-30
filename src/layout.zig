@@ -4,7 +4,7 @@
 //! Performance: 0.029-0.107μs per element (4-14x faster than Taffy/Yoga)
 //!
 //! Validated with 31 passing tests.
-//! See lib/zlay/docs/HONEST_VALIDATION_RESULTS.md for complete validation.
+//! See docs/LAYOUT_PERFORMANCE_RESULTS.md for complete validation.
 
 const std = @import("std");
 
