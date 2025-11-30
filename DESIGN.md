@@ -187,6 +187,136 @@ pub fn computeStateVersion(state: anytype) u64 {
 
 ---
 
+## Widget ID System
+
+zig-gui uses a **hybrid ID system** that provides zero-cost IDs for Zig users while supporting runtime IDs for C API and language bindings.
+
+### Design Goals
+
+| Requirement | Solution |
+|-------------|----------|
+| Zero runtime cost (Zig) | Comptime string hashing |
+| C API compatible | Runtime hashing fallback |
+| Loop-friendly | Index-based ID composition |
+| Debuggable | Debug-only string storage |
+| Embedded (32KB) | 4 bytes per ID, fixed-size stack |
+
+### Core Types
+
+```zig
+/// Widget identifier - 4 bytes
+pub const WidgetId = packed struct {
+    hash: u32,
+
+    /// Comptime: zero-cost hash (Zig users)
+    pub fn from(comptime label: []const u8) WidgetId {
+        return .{ .hash = comptime std.hash.Wyhash.hash(0, label) };
+    }
+
+    /// Runtime: for C API and dynamic strings
+    pub fn runtime(label: []const u8) WidgetId {
+        return .{ .hash = @truncate(std.hash.Wyhash.hash(0, label)) };
+    }
+
+    /// For loops: combine base ID with index
+    pub fn indexed(base: WidgetId, index: usize) WidgetId {
+        return .{ .hash = base.hash ^ @as(u32, @truncate(index)) *% 0x9e3779b9 };
+    }
+};
+```
+
+### ID Stack
+
+Hierarchical scoping for complex UIs:
+
+```zig
+pub const IdStack = struct {
+    stack: [16]u32 = undefined,  // 64 bytes, fits in cache line
+    depth: u8 = 0,
+    current_hash: u32 = 0,
+
+    // Debug only
+    debug_path: if (builtin.mode == .Debug) std.ArrayList([]const u8) else void,
+
+    pub fn push(self: *IdStack, comptime label: []const u8) void {
+        self.pushHash(comptime std.hash.Wyhash.hash(0, label));
+        if (builtin.mode == .Debug) self.debug_path.append(label);
+    }
+
+    pub fn pushIndex(self: *IdStack, index: usize) void {
+        self.pushHash(@truncate(index));
+    }
+
+    pub fn pop(self: *IdStack) void {
+        self.depth -= 1;
+        self.current_hash = self.stack[self.depth];
+        if (builtin.mode == .Debug) _ = self.debug_path.pop();
+    }
+
+    pub fn combine(self: *const IdStack, widget_hash: u32) u32 {
+        return self.current_hash ^ widget_hash;
+    }
+};
+```
+
+### Zig Usage (Zero Cost)
+
+```zig
+fn myApp(gui: *GUI, state: *AppState) !void {
+    // Simple: label is ID (hash computed at comptime)
+    if (try gui.button("Settings")) {
+        // ...
+    }
+
+    // Scoped: hierarchical IDs
+    try gui.pushId("settings_panel");
+    defer gui.popId();
+
+    if (try gui.button("Save")) {   // ID = hash("settings_panel") ^ hash("Save")
+        // ...
+    }
+
+    // Loops: index-based composition
+    for (state.items.items, 0..) |item, i| {
+        gui.pushIndex(i);
+        defer gui.popId();
+
+        try gui.text(item.name);
+        if (try gui.button("Delete")) {  // ID = hash("settings_panel") ^ i ^ hash("Delete")
+            state.items.ptr().orderedRemove(i);
+        }
+    }
+}
+```
+
+### Debug Support
+
+In debug builds, collision detection and path tracing:
+
+```zig
+// Debug mode only
+pub fn debugIdPath(self: *const GUI) []const u8 {
+    // Returns: "settings_panel > 3 > Delete"
+}
+
+// Collision detection warns on stderr:
+// ⚠️ ID collision: hash=0x7a3b2c1d
+//   Path 1: settings_panel > Save
+//   Path 2: other_panel > Save
+```
+
+### Memory Budget (Embedded)
+
+```
+IdStack:        64 bytes  (16-deep stack)
+WidgetId:        4 bytes  (per widget)
+Debug path:      0 bytes  (release builds)
+─────────────────────────
+Overhead:       68 bytes  (vs 32KB budget = 0.2%)
+```
+
+---
+
 ## Layout Engine
 
 The layout engine implements flexbox layout with these characteristics:
@@ -197,27 +327,44 @@ The layout engine implements flexbox layout with these characteristics:
 
 ### API
 
+The layout engine uses numeric indices for maximum performance. The GUI layer maps widget IDs to layout indices.
+
 ```zig
 var engine = try layout.LayoutEngine.init(allocator);
 defer engine.deinit();
 
-engine.beginFrame();
-
-// Add elements
-_ = try engine.addContainer("root", null, .{
+// Add elements - returns numeric index
+const root = try engine.addElement(null, .{
     .direction = .column,
-    .width = 800,
-    .height = 600,
+    .size = .{ .width = .{ .pixels = 800 }, .height = .{ .pixels = 600 } },
 });
-_ = try engine.addLeaf("header", "root", .{ .height = 60 });
-_ = try engine.addLeaf("body", "root", .{ .flex_grow = 1 });
+const header = try engine.addElement(root, .{
+    .size = .{ .height = .{ .pixels = 60 } },
+});
+const body = try engine.addElement(root, .{
+    .flex_grow = 1,
+});
 
-// Compute
+// Compute layout
 try engine.computeLayout(800, 600);
 
-// Query results
-const header = engine.getLayout("header").?;
-// header.x, header.y, header.width, header.height
+// Query results by index
+const header_rect = engine.getRect(header);
+// header_rect.x, header_rect.y, header_rect.width, header_rect.height
+```
+
+### GUI Integration
+
+The GUI maintains a mapping from widget IDs to layout indices:
+
+```zig
+// Inside GUI - automatic layout index management
+pub fn container(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
+    const widget_id = self.id_stack.combine(comptime hash(label));
+    const layout_index = try self.layout_engine.addElement(self.current_parent, style);
+    self.widget_to_layout.put(widget_id, layout_index);
+    // ...
+}
 ```
 
 ### Container Options
@@ -255,8 +402,8 @@ const header = engine.getLayout("header").?;
 ### Dirty Tracking
 
 ```zig
-engine.markDirty("element_id");
-engine.updateStyle("element_id", .{ .height = 100 }); // Auto-marks dirty
+engine.markDirty(element_index);
+engine.setStyle(element_index, .{ .size = .{ .height = .{ .pixels = 100 } } }); // Auto-marks dirty
 ```
 
 ### Performance Monitoring
@@ -422,27 +569,72 @@ void my_ui(ZigGuiContext* ctx, void* user_data) {
 }
 ```
 
+### ID System
+
+```c
+// ID stack - for hierarchical scoping
+void zig_gui_push_id(ZigGuiContext* ctx, const char* id);
+void zig_gui_push_index(ZigGuiContext* ctx, size_t index);
+void zig_gui_pop_id(ZigGuiContext* ctx);
+
+// Debug (debug builds only, no-op in release)
+const char* zig_gui_debug_id_path(ZigGuiContext* ctx);
+void zig_gui_debug_check_collisions(ZigGuiContext* ctx);
+```
+
 ### Widgets
 
 ```c
 // Text
 void zig_gui_text(ZigGuiContext* ctx, const char* fmt, ...);
-void zig_gui_text_styled(ZigGuiContext* ctx, const ZigGuiTextStyle* style, const char* fmt, ...);
 
-// Buttons
+// Buttons - label is used as ID (hashed at runtime)
 bool zig_gui_button(ZigGuiContext* ctx, const char* label);
-bool zig_gui_button_styled(ZigGuiContext* ctx, const ZigGuiButtonStyle* style, const char* label);
+
+// Buttons with explicit ID (when label differs from ID)
+bool zig_gui_button_id(ZigGuiContext* ctx, const char* id, const char* label);
 
 // Input
-bool zig_gui_text_input(ZigGuiContext* ctx, const char* id, char* buffer, size_t buffer_size);
+bool zig_gui_text_input(ZigGuiContext* ctx, const char* label, char* buffer, size_t buffer_size);
 bool zig_gui_checkbox(ZigGuiContext* ctx, const char* label, bool* value);
 bool zig_gui_slider_float(ZigGuiContext* ctx, const char* label, float* value, float min, float max);
 
-// Layout
-void zig_gui_begin_row(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
-void zig_gui_end_row(ZigGuiContext* ctx);
-void zig_gui_begin_column(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
-void zig_gui_end_column(ZigGuiContext* ctx);
+// Layout containers
+void zig_gui_push_row(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
+void zig_gui_push_column(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
+void zig_gui_pop_layout(ZigGuiContext* ctx);
+```
+
+### C Usage Example
+
+```c
+void settings_panel(ZigGuiContext* ctx, SettingsState* state) {
+    zig_gui_push_id(ctx, "settings");
+
+    zig_gui_text(ctx, "Settings");
+
+    if (zig_gui_button(ctx, "Save")) {
+        save_settings(state);
+    }
+
+    // Same label, different IDs
+    zig_gui_button_id(ctx, "reset_audio", "Reset");
+    zig_gui_button_id(ctx, "reset_video", "Reset");
+
+    // Loop with index-based IDs
+    for (size_t i = 0; i < state->item_count; i++) {
+        zig_gui_push_index(ctx, i);
+
+        zig_gui_text(ctx, state->items[i].name);
+        if (zig_gui_button(ctx, "Delete")) {
+            delete_item(state, i);
+        }
+
+        zig_gui_pop_id(ctx);
+    }
+
+    zig_gui_pop_id(ctx);
+}
 ```
 
 ### State Management
@@ -457,6 +649,150 @@ float zig_gui_state_get_float(ZigGuiState* state, const char* key, float default
 
 void zig_gui_state_set_string(ZigGuiState* state, const char* key, const char* value);
 const char* zig_gui_state_get_string(ZigGuiState* state, const char* key, const char* default_value);
+```
+
+---
+
+## Language Bindings
+
+The C API enables idiomatic bindings for any language. Below are reference patterns.
+
+### Python (Context Managers)
+
+```python
+from zig_gui import GUI, Tracked
+
+class Counter:
+    count = Tracked(0)
+
+    def render(self, gui: GUI):
+        with gui.column():
+            gui.text(f"Count: {self.count}")
+
+            if gui.button("Increment"):
+                self.count += 1
+
+            # Loops with automatic index scoping
+            with gui.scope("items"):
+                for i, item in enumerate(self.items):
+                    with gui.scope(i):
+                        gui.text(item.name)
+                        if gui.button("Delete"):
+                            self.items.remove(item)
+```
+
+The wrapper is thin:
+
+```python
+@contextmanager
+def scope(self, id):
+    if isinstance(id, int):
+        _lib.zig_gui_push_index(self._ctx, id)
+    else:
+        _lib.zig_gui_push_id(self._ctx, str(id).encode())
+    try:
+        yield
+    finally:
+        _lib.zig_gui_pop_id(self._ctx)
+
+@contextmanager
+def column(self, **options):
+    _lib.zig_gui_push_column(self._ctx, options)
+    try:
+        yield
+    finally:
+        _lib.zig_gui_pop_layout(self._ctx)
+```
+
+### TypeScript (Closures)
+
+```typescript
+class Counter {
+    count = tracked(0);
+
+    render(gui: GUI) {
+        gui.column(() => {
+            gui.text(`Count: ${this.count}`);
+
+            if (gui.button("Increment")) {
+                this.count++;
+            }
+
+            gui.scope("items", () => {
+                this.items.forEach((item, i) => {
+                    gui.scope(i, () => {
+                        gui.text(item.name);
+                        if (gui.button("Delete")) {
+                            this.items.splice(i, 1);
+                        }
+                    });
+                });
+            });
+        });
+    }
+}
+```
+
+### WebAssembly
+
+WASM target uses the same C API with build-time optimization:
+
+```typescript
+// Source (developer writes)
+gui.button("Settings");
+
+// After esbuild/babel plugin (build output)
+gui._buttonHash(0x7a3b2c1d, "Settings");  // Hash pre-computed!
+```
+
+Benefits:
+- Zero runtime hashing (like Zig comptime)
+- Strings still available for display
+- Minimal WASM ↔ JS boundary crossing
+
+### Declarative Layer (Optional)
+
+For React/SwiftUI-like DX, a virtual DOM layer can be built on top:
+
+```typescript
+// JSX syntax (requires build step)
+function SettingsPanel() {
+    const [volume, setVolume] = useGuiState(50);
+
+    return (
+        <Column>
+            <Text>Volume: {volume}</Text>
+            <Slider value={volume} onChange={setVolume} min={0} max={100} />
+            <Button onClick={() => setVolume(50)}>Reset</Button>
+        </Column>
+    );
+}
+```
+
+The framework reconciles JSX → immediate-mode C API calls.
+
+### Binding Architecture
+
+```
+┌─────────────────────────────────────┐
+│  Declarative Layer (optional)       │
+│  - Virtual DOM / Element tree       │
+│  - Diffing & reconciliation         │
+├─────────────────────────────────────┤
+│  Language Bindings                  │
+│  - Python: context managers         │
+│  - TypeScript: closures             │
+│  - Swift: property wrappers         │
+├─────────────────────────────────────┤
+│  C API (immediate mode)             │
+│  - ~20 functions                    │
+│  - Runtime string hashing           │
+├─────────────────────────────────────┤
+│  Zig Core                           │
+│  - Comptime string hashing          │
+│  - Layout engine                    │
+│  - Rendering                        │
+└─────────────────────────────────────┘
 ```
 
 ---
