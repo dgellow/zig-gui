@@ -35,53 +35,75 @@ getDirtyCount() usize              // Returns count, not bool
 computeLayout(width, height)       // Expects dimensions, not root
 ```
 
-### Solution Options
+### Solution: Pure ID-Based (Spec-Compliant)
 
-**Option 1: Add View mapping to LayoutWrapper** (Recommended)
+**DECISION MADE: Option 2 (Pure ID-Based)**
+
+After reviewing **docs/spec.md**, the decision is clear and unambiguous:
+- ✅ Spec defines immediate-mode API (function-based UI)
+- ✅ Spec shows data-oriented foundations (zlay arrays)
+- ✅ User directive: "Zig gui should use whatever works best for Zlay"
+- ✅ zlay works best with index-based API (no Views, no HashMap overhead)
+
+**See docs/SPEC_ALIGNMENT_ANALYSIS.md for complete analysis.**
+
+**Implementation approach:**
 ```zig
+// Immediate-mode API (per spec examples)
+fn MyApp(gui: *GUI, state: *AppState) !void {
+    try gui.container("root", .{ .padding = 20 }, struct {
+        fn content(g: *GUI, s: *AppState) !void {
+            try g.text("counter", "Counter: {}", .{s.counter.get()});
+            if (try g.button("increment", "Increment")) {
+                s.counter.set(s.counter.get() + 1);
+            }
+        }
+    }.content);
+}
+
+// LayoutWrapper with nesting stack (hidden from user)
 pub const LayoutWrapper = struct {
-    engine: LayoutEngine,
-    id_map: std.StringHashMap(u32),
-    view_map: std.AutoHashMap(*const View, u32),  // NEW: View → index mapping
+    engine: LayoutEngine,                  // zlay v2.0
+    id_map: StringHashMap(u32),           // ID → index (per frame)
+    parent_stack: ArrayList(u32),         // Current nesting
 
-    pub fn markDirtyView(self: *LayoutWrapper, view: *View) void {
-        const index = self.view_map.get(view) orelse return;
-        self.engine.markDirty(index);
+    pub fn beginContainer(self: *LayoutWrapper, id: []const u8, style: FlexStyle) !void {
+        const index = try self.addElement(id, style);
+        try self.parent_stack.append(index);
     }
 
-    pub fn needsLayout(self: *const LayoutWrapper) bool {
-        return self.engine.getDirtyCount() > 0;
-    }
-
-    pub fn calculateLayout(self: *LayoutWrapper, root: *View) !void {
-        try self.engine.computeLayout(root.rect.width, root.rect.height);
-    }
-
-    pub fn registerView(self: *LayoutWrapper, view: *View, index: u32) !void {
-        try self.view_map.put(view, index);
+    pub fn endContainer(self: *LayoutWrapper) void {
+        _ = self.parent_stack.pop();
     }
 };
 ```
 
-**Option 2: Refactor GUI.zig to use IDs directly**
-- Remove View-based API completely
-- Use string IDs everywhere
-- More breaking changes, but cleaner long-term
-
 ### Files That Need Updates
 
-1. **src/layout.zig** - Add View mapping to LayoutWrapper
-2. **src/gui.zig** - Update to use new API (either via wrapper or direct IDs)
-3. **src/components/view.zig** - Review if View needs layout index field
-4. **examples/** - Update all examples to new API
+**To Delete (~500 lines):**
+1. **src/components/view.zig** - Entire file (retained tree, not in spec)
+2. View references in GUI - Pointer-based API
+3. Old LayoutParams - Replaced with FlexStyle
+
+**To Create/Update (~900 lines):**
+1. **src/layout.zig** - Add nesting stack, per-frame ID tracking (~100 lines added)
+2. **src/gui.zig** - ID-based methods (button, text, container, etc.) (~200 lines)
+3. **src/app.zig** - Frame lifecycle (beginFrame/endFrame) (~50 lines)
+4. **examples/** - Spec-compliant examples (~400 lines)
+   - Todo app (per spec line 133)
+   - Email client (per spec line 561)
+   - Game HUD (per spec line 591)
+5. **tests/** - Update to immediate-mode API (~150 lines)
 
 ### Testing Plan
 
-1. Add View mapping to LayoutWrapper
-2. Compile and fix any errors
-3. Run existing tests
-4. Update examples one by one
-5. Verify performance is maintained
+1. ✅ **Delete View-based code** - Remove temporary scaffold
+2. **Implement ID-based LayoutWrapper** - Nesting stack + per-frame ID map
+3. **Update GUI methods** - button(), text(), container() with IDs
+4. **Create spec examples** - Todo, Email, Game HUD (matching spec)
+5. **Compile and fix errors** - Ensure everything builds
+6. **Run tests** - Update to immediate-mode API
+7. **Validate performance** - Ensure no regression from ID tracking
 
 ## Performance Validation
 
@@ -97,26 +119,38 @@ pub const LayoutWrapper = struct {
 
 ## Next Steps
 
-1. **Decide on approach** - Option 1 (View mapping) vs Option 2 (pure ID-based)
-2. **Implement adapter layer** - Based on chosen approach
-3. **Fix compilation errors** - Update GUI.zig and components
-4. **Update examples** - Verify everything works
-5. **Validate performance** - Ensure no regression from mapping overhead
-6. **Update documentation** - Reflect actual API after adaptation
+**Decision:** Pure ID-Based (per spec alignment analysis)
+
+1. ✅ **Review spec.md** - DONE (see SPEC_ALIGNMENT_ANALYSIS.md)
+2. ✅ **Make decision** - DONE (Pure ID-Based is spec-compliant)
+3. **Implement LayoutWrapper enhancements** - Nesting stack, ID tracking
+4. **Delete View-based code** - src/components/view.zig and references
+5. **Update GUI to immediate-mode API** - button(id, text), etc.
+6. **Create spec-matching examples** - Todo, Email, Game HUD
+7. **Validate performance** - Ensure ID tracking has no overhead
+8. **Update documentation** - Reflect immediate-mode API
 
 ## Breaking Changes Summary
 
 **Already broken (committed):**
-- Old layout.zig API completely removed
+- Old layout.zig API completely removed (802 lines)
 - LayoutParams → FlexStyle
 - LengthConstraint removed
 - Old LayoutEngine.init signature changed
 
-**May break further:**
-- If choosing Option 2, View-based API would be removed from GUI
-- Examples would need significant updates
-- Components may need to track layout IDs
+**Will break next (spec-compliant refactor):**
+- ✅ View-based API removed (not in spec)
+- ✅ src/components/view.zig deleted (~300 lines)
+- ✅ Immediate-mode API implemented (per spec)
+- ✅ Examples rewritten to match spec (function-based UI)
+- ✅ Tests updated to immediate-mode
+
+**Justification:**
+- Spec explicitly defines immediate-mode API
+- User directive: "Zig gui should use whatever works best for Zlay"
+- zlay works best with index-based, data-oriented API
+- Current View-based code is temporary scaffold, not spec-compliant
 
 ---
 
-**Current status:** Aggressive breaking changes committed. Adaptation layer needed for full integration.
+**Current status:** Core imports complete. Next: Delete View scaffold and implement spec-compliant immediate-mode API.
