@@ -1,71 +1,85 @@
-//! High-Performance Layout Engine powered by zlay v2.0
+///! High-Performance Layout System for zig-gui
 //!
-//! This is a thin wrapper around zlay v2.0's layout engine.
+//! Data-oriented layout engine integrated directly into zig-gui.
+//! Performance: 0.029-0.107μs per element (4-14x faster than Taffy/Yoga)
 //!
-//! Performance (VALIDATED - all 31 tests passing):
-//! - Email Client (81 elements): 0.073μs per element (5.7x faster than Taffy)
-//! - Game HUD (47 elements): 0.107μs per element (3.9x faster than Taffy)
-//! - Stress Test (1011 elements): 0.032μs per element (13.1x faster than Taffy)
-//!
-//! Features:
-//! - Spineless traversal (9.33x speedup - only process dirty elements)
-//! - SIMD constraint clamping (1.95x speedup)
-//! - Layout caching (2-5x speedup on incremental updates)
-//! - Memory efficient (176 bytes per element)
-//!
-//! See lib/zlay/HONEST_VALIDATION_RESULTS.md for complete validation.
+//! Validated with 31 passing tests.
+//! See lib/zlay/docs/HONEST_VALIDATION_RESULTS.md for complete validation.
 
 const std = @import("std");
-const zlay = @import("zlay");
-const Rect = @import("core/geometry.zig").Rect;
 
-// Re-export zlay v2.0 types with friendly names
-pub const LayoutEngine = zlay.layout_engine_v2.LayoutEngine;
-pub const FlexStyle = zlay.flexbox.FlexStyle;
-pub const FlexDirection = zlay.flexbox.FlexDirection;
-pub const JustifyContent = zlay.flexbox.JustifyContent;
-pub const AlignItems = zlay.flexbox.AlignItems;
-pub const LayoutResult = zlay.flexbox.LayoutResult;
-pub const CacheStats = zlay.cache.CacheStats;
-pub const DirtyQueue = zlay.dirty_tracking.DirtyQueue;
+// Core layout engine (data-oriented, cache-friendly)
+pub const LayoutEngine = @import("layout/engine.zig").LayoutEngine;
 
-// Convenience wrapper for zig-gui specific usage patterns
+// Flexbox algorithm and types
+pub const FlexStyle = @import("layout/flexbox.zig").FlexStyle;
+pub const FlexDirection = @import("layout/flexbox.zig").FlexDirection;
+pub const JustifyContent = @import("layout/flexbox.zig").JustifyContent;
+pub const AlignItems = @import("layout/flexbox.zig").AlignItems;
+pub const LayoutResult = @import("layout/flexbox.zig").LayoutResult;
+
+// Performance and debugging
+pub const CacheStats = @import("layout/cache.zig").CacheStats;
+pub const LayoutCacheEntry = @import("layout/cache.zig").LayoutCacheEntry;
+pub const DirtyQueue = @import("layout/dirty_tracking.zig").DirtyQueue;
+
+// Geometry types (from core)
+pub const Rect = @import("core/geometry.zig").Rect;
+pub const Point = @import("core/geometry.zig").Point;
+pub const Size = @import("core/geometry.zig").Size;
+pub const EdgeInsets = @import("core/geometry.zig").EdgeInsets;
+
+/// ID-based immediate-mode layout wrapper
+/// Provides the bridge between GUI function calls and data-oriented layout engine
 pub const LayoutWrapper = struct {
     engine: LayoutEngine,
     id_map: std.StringHashMap(u32),
+    parent_stack: std.ArrayList(u32),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) !LayoutWrapper {
         return .{
             .engine = try LayoutEngine.init(allocator),
             .id_map = std.StringHashMap(u32).init(allocator),
+            .parent_stack = std.ArrayList(u32).init(allocator),
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *LayoutWrapper) void {
         self.engine.deinit();
         self.id_map.deinit();
+        self.parent_stack.deinit();
     }
 
+    /// Begin a new frame - clear per-frame state
     pub fn beginFrame(self: *LayoutWrapper) void {
         self.engine.beginFrame();
         self.id_map.clearRetainingCapacity();
+        self.parent_stack.clearRetainingCapacity();
     }
 
-    /// Add element with ID tracking
-    pub fn addElement(
-        self: *LayoutWrapper,
-        id: []const u8,
-        parent_id: ?[]const u8,
-        style: FlexStyle,
-    ) !u32 {
-        const parent_index = if (parent_id) |pid|
-            self.id_map.get(pid)
+    /// Add element with automatic parent tracking
+    pub fn addElement(self: *LayoutWrapper, id: []const u8, style: FlexStyle) !u32 {
+        const parent = if (self.parent_stack.items.len > 0)
+            self.parent_stack.items[self.parent_stack.items.len - 1]
         else
             null;
 
-        const index = try self.engine.addElement(parent_index, style);
+        const index = try self.engine.addElement(parent, style);
         try self.id_map.put(id, index);
         return index;
+    }
+
+    /// Begin container - pushes to parent stack
+    pub fn beginContainer(self: *LayoutWrapper, id: []const u8, style: FlexStyle) !void {
+        const index = try self.addElement(id, style);
+        try self.parent_stack.append(index);
+    }
+
+    /// End container - pops from parent stack
+    pub fn endContainer(self: *LayoutWrapper) void {
+        _ = self.parent_stack.pop();
     }
 
     pub fn computeLayout(self: *LayoutWrapper, width: f32, height: f32) !void {
@@ -74,13 +88,7 @@ pub const LayoutWrapper = struct {
 
     pub fn getLayout(self: *const LayoutWrapper, id: []const u8) ?Rect {
         const index = self.id_map.get(id) orelse return null;
-        const rect = self.engine.getRect(index);
-        return Rect{
-            .x = rect.x,
-            .y = rect.y,
-            .width = rect.width,
-            .height = rect.height,
-        };
+        return self.engine.getRect(index);
     }
 
     pub fn markDirty(self: *LayoutWrapper, id: []const u8) void {
@@ -106,7 +114,7 @@ pub const LayoutWrapper = struct {
     }
 };
 
-test "LayoutEngine: basic usage" {
+test "LayoutWrapper: basic immediate-mode usage" {
     const testing = std.testing;
 
     var wrapper = try LayoutWrapper.init(testing.allocator);
@@ -114,18 +122,20 @@ test "LayoutEngine: basic usage" {
 
     wrapper.beginFrame();
 
-    // Create root
-    _ = try wrapper.addElement("root", null, .{
+    // Begin root container
+    try wrapper.beginContainer("root", .{
         .direction = .column,
         .width = 800,
         .height = 600,
     });
 
-    // Add children
-    _ = try wrapper.addElement("child1", "root", .{ .height = 50 });
-    _ = try wrapper.addElement("child2", "root", .{ .height = 30 });
+    // Add children (automatic parent tracking via stack)
+    _ = try wrapper.addElement("child1", .{ .height = 50 });
+    _ = try wrapper.addElement("child2", .{ .height = 30 });
 
-    // Compute layout (FAST!)
+    wrapper.endContainer(); // End root
+
+    // Compute layout
     try wrapper.computeLayout(800, 600);
 
     // Verify

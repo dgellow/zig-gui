@@ -1,169 +1,90 @@
-# Zlay - A Hyper-Efficient Zig Layout Library
+# zlay - High-Performance Layout Engine
 
-Zlay is a data-oriented GUI layout library written in Zig, inspired by [Clay](https://github.com/nicbarker/clay). It provides a minimal, hyper-efficient API for creating and managing UI layouts with a laser focus on performance, predictability, and low overhead.
+> **NOTE:** The implementation has been integrated into zig-gui at `src/layout/`.
+>
+> This directory now contains reference documentation and independent benchmarks.
 
-## Key Features
+## Performance (Validated)
 
-- **Extreme Performance**: Designed for game engines, embedded systems, and performance-critical applications
-- **Data-Oriented Design**: Optimized memory layout and cache-friendly processing
-- **Zero Dependencies**: Bring your own rendering, text measurement, and event handling
-- **Minimal Memory Footprint**: Suitable for resource-constrained environments
-- **Efficient Layout Algorithm**: Predictable, fast layout calculations
-- **C API**: Easy integration with any language
-- **Clear Boundaries**: Focused solely on layout with clean extension points
+See [docs/HONEST_VALIDATION_RESULTS.md](docs/HONEST_VALIDATION_RESULTS.md):
 
-## Design Philosophy
+- **Email Client** (81 elements, 10% dirty): **0.073μs per element** (5.7x faster than Taffy)
+- **Email Client** (81 elements, 100% dirty): **0.029μs per element** (14.4x faster than Taffy)
+- **Game HUD** (47 elements, 5% dirty): **0.107μs per element** (3.9x faster than Taffy)
+- **Stress Test** (1011 elements, 30% dirty): **0.032μs per element** (13.1x faster than Taffy)
 
-Zlay follows a "bring your own X" philosophy, focusing purely on the layout calculations while allowing integrators to provide their own rendering, input handling, and other systems. This separation of concerns keeps the library focused and highly optimized.
+**All 31 tests passing.**
 
-### What's IN Scope for zlay
-- Layout engine (positioning and sizing elements)
-- Element hierarchy management
-- Basic styling that affects layout (padding, margin, alignment)
-- Position and size calculations with constraints
-- Text measurement abstractions
-- Scrollable container calculations
-- Hit testing fundamentals
+## Architecture
 
-### What's OUT of Scope
-- Rendering implementation (handled by pluggable renderers)
-- Image loading (only dimensions matter for layout)
-- Event dispatching (beyond basic hit testing)
-- Animation system
-- State management
-- Custom component behaviors
+### Data-Oriented Design
+- **Spineless Traversal**: 9.33x speedup over traditional tree walking
+- **SIMD Constraints**: 1.95x speedup on constraint clamping
+- **Layout Caching**: 2-5x speedup on incremental updates
+- **Memory Efficient**: 176 bytes per element
 
-## Basic Usage
+### Components
+
+1. **engine.zig** - Core layout engine with spineless traversal
+2. **flexbox.zig** - Complete flexbox algorithm implementation
+3. **cache.zig** - Layout result caching for incremental updates
+4. **dirty_tracking.zig** - Queue-based dirty node tracking
+5. **simd.zig** - SIMD-optimized constraint operations
+
+## Integrated into zig-gui
+
+The layout engine is now part of zig-gui's `src/layout/` directory:
 
 ```zig
-const std = @import("std");
-const zlay = @import("zlay");
+const layout = @import("layout.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    
-    // Create context
-    var ctx = try zlay.init(allocator);
-    defer ctx.deinit();
-    
-    // Begin frame
-    try ctx.beginFrame();
-    
-    // Create a container
-    const container = try ctx.beginElement(.container, "container");
-    
-    // Add a button
-    const button = try ctx.beginElement(.button, "button");
-    ctx.elements.items[button].text = "Click Me";
-    ctx.elements.items[button].style.background_color = zlay.Color.rgb(50, 150, 50);
-    ctx.elements.items[button].style.text_color = zlay.Color.white;
-    ctx.elements.items[button].style.corner_radius = 5;
-    ctx.elements.items[button].style.setPadding(10);
-    try ctx.endElement(); // button
-    
-    // End container
-    try ctx.endElement(); // container
-    
-    // Compute layout
-    try ctx.computeLayout(800, 600);
-    
-    // Attach your renderer
-    // ctx.setRenderer(&your_renderer);
-    
-    // Render
-    // try ctx.render();
-}
+// Data-oriented engine
+const LayoutEngine = layout.LayoutEngine;
+
+// Immediate-mode wrapper
+const LayoutWrapper = layout.LayoutWrapper;
+
+// Use LayoutWrapper for ID-based immediate-mode API
+var wrapper = try LayoutWrapper.init(allocator);
+defer wrapper.deinit();
+
+wrapper.beginFrame();
+try wrapper.beginContainer("root", .{ .direction = .column });
+_ = try wrapper.addElement("child1", .{ .height = 50 });
+_ = try wrapper.addElement("child2", .{ .height = 30 });
+wrapper.endContainer();
+
+try wrapper.computeLayout(800, 600);
 ```
 
-## C API Example
+## Documentation
 
-```c
-#include "zlay.h"
-#include <stdio.h>
+- [HONEST_VALIDATION_RESULTS.md](docs/HONEST_VALIDATION_RESULTS.md) - Complete performance validation
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Design decisions and architecture
+- [PERFORMANCE_RESULTS.md](docs/PERFORMANCE_RESULTS.md) - Component benchmarks
+- [V2_IMPLEMENTATION_STATUS.md](docs/V2_IMPLEMENTATION_STATUS.md) - Implementation notes
 
-void begin_frame(ZlayRenderer* renderer) {
-    printf("Begin frame\n");
-}
+## Why the Integration?
 
-void end_frame(ZlayRenderer* renderer) {
-    printf("End frame\n");
-}
+Merging zlay into zig-gui provides:
 
-void clear(ZlayRenderer* renderer, ZlayColor color) {
-    printf("Clear: rgba(%d, %d, %d, %d)\n", color.r, color.g, color.b, color.a);
-}
+1. **Tighter Integration** - No library boundary overhead
+2. **Optimized for Immediate-Mode** - Designed specifically for GUI function calls
+3. **Simpler Build** - One codebase, faster compilation
+4. **Same Performance** - All validated benchmarks maintained
 
-void draw_rect(ZlayRenderer* renderer, float x, float y, float width, float height, ZlayColor fill) {
-    printf("Draw rect: x=%.2f, y=%.2f, w=%.2f, h=%.2f, color=rgba(%d, %d, %d, %d)\n",
-        x, y, width, height, fill.r, fill.g, fill.b, fill.a);
-}
+The implementation can be extracted back to a standalone library if needed in the future.
 
-// Other renderer functions...
+## Benchmarks
 
-int main() {
-    // Create context
-    ZlayContext* ctx = zlay_create_context();
-    
-    // Create renderer
-    ZlayRenderer* renderer = zlay_create_renderer(
-        NULL, begin_frame, end_frame, clear, draw_rect,
-        /* other functions... */
-    );
-    
-    // Set renderer
-    zlay_set_renderer(ctx, renderer);
-    
-    // Begin frame
-    zlay_begin_frame(ctx);
-    
-    // Create UI elements
-    zlay_begin_element(ctx, ZLAY_ELEMENT_CONTAINER, "container");
-    zlay_begin_element(ctx, ZLAY_ELEMENT_BUTTON, "button");
-    
-    // Set text
-    zlay_set_text(ctx, "Click Me");
-    
-    // Configure style
-    ZlayStyle style = {0};
-    ZlayColor bg_color = zlay_rgb(50, 150, 50);
-    ZlayColor text_color = zlay_rgb(255, 255, 255);
-    style.background_color = &bg_color;
-    style.text_color = &text_color;
-    style.corner_radius = 5;
-    style.padding_left = 10;
-    style.padding_right = 10;
-    style.padding_top = 10;
-    style.padding_bottom = 10;
-    zlay_set_style(ctx, &style);
-    
-    // End elements
-    zlay_end_element(ctx);
-    zlay_end_element(ctx);
-    
-    // Compute layout and render
-    zlay_compute_layout(ctx, 800, 600);
-    zlay_render(ctx);
-    
-    // Cleanup
-    zlay_destroy_renderer(renderer);
-    zlay_destroy_context(ctx);
-    
-    return 0;
-}
-```
-
-## Building
+The `src/` directory contains the reference implementation used for benchmarking:
 
 ```bash
-# Build the library
-zig build
+# Run full layout benchmarks
+zig test src/full_layout_benchmark.zig -O ReleaseFast
 
-# Run the example
-zig build run-example
+# Run component benchmarks
+zig test src/performance_validation.zig -O ReleaseFast
 ```
 
-## License
-
-MIT
+All benchmarks are documented with honest validation methodology in the docs.

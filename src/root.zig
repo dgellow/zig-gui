@@ -141,12 +141,12 @@ pub const components = struct {
 };
 
 // =============================================================================
-// Layout (powered by zlay v2.0 - 4-14x faster!)
+// Layout (integrated from zlay v2.0 - 4-14x faster!)
 // =============================================================================
 
 pub const layout = struct {
-    /// High-performance layout engine (zlay v2.0)
-    /// Performance: 0.029-0.107μs per element (validated)
+    /// High-performance data-oriented layout engine
+    /// Performance: 0.029-0.107μs per element (validated with 31 tests)
     pub const LayoutEngine = @import("layout.zig").LayoutEngine;
 
     /// Convenience wrapper with ID-based API
