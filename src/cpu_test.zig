@@ -170,20 +170,39 @@ const GameState = struct {
 };
 
 fn gameUI(gui: *GUI, state: *GameState) !void {
-    _ = gui;
-    // Simulate typical game HUD rendering
-    state.frame_count.set(state.frame_count.get() + 1);
+    // Actually render GUI widgets - this is what we're benchmarking!
+    try gui.text("Frame: {}", .{state.frame_count.get()});
+    try gui.text("Health: {}/100", .{state.health.get()});
+    try gui.text("Mana: {}/100", .{state.mana.get()});
+    try gui.text("Score: {}", .{state.score.get()});
 
-    // Simulate state updates every frame
-    if (state.frame_count.get() % 10 == 0) {
-        state.health.set(state.health.get() - 1);
-        state.mana.set(state.mana.get() + 1);
+    gui.newLine();
+
+    if (try gui.button("Heal")) {
+        state.health.set(@min(100, state.health.get() + 10));
+    }
+
+    if (try gui.button("Cast Spell")) {
+        if (state.mana.get() >= 10) {
+            state.mana.set(state.mana.get() - 10);
+        }
+    }
+
+    if (try gui.button("Add Score")) {
         state.score.set(state.score.get() + 100);
     }
+
+    gui.newLine();
+    gui.separator();
+
+    // Update frame count
+    state.frame_count.set(state.frame_count.get() + 1);
 }
 
-test "game loop mode: <4ms frame time (250 FPS capability)" {
+test "game loop mode: widget processing overhead <0.1ms (framework efficiency)" {
     std.debug.print("\n=== Testing Game Loop Performance ===\n", .{});
+    std.debug.print("NOTE: This test measures widget processing overhead only.\n", .{});
+    std.debug.print("      Actual rendering cost is platform-dependent and additional.\n\n", .{});
 
     var platform = HeadlessPlatform.init();
     platform.max_frames = 1001; // Run 1000 frames + initial
@@ -228,21 +247,27 @@ test "game loop mode: <4ms frame time (250 FPS capability)" {
     const avg_frame_time_ms = @as(f64, @floatFromInt(avg_frame_time_ns)) / std.time.ns_per_ms;
     const max_frame_time_ms = @as(f64, @floatFromInt(max_frame_time)) / std.time.ns_per_ms;
     const min_frame_time_ms = @as(f64, @floatFromInt(min_frame_time)) / std.time.ns_per_ms;
-    const fps_capability = 1000.0 / avg_frame_time_ms;
 
-    std.debug.print("\nResults ({} frames):\n", .{test_frames});
-    std.debug.print("  Avg frame time: {d:.3}ms\n", .{avg_frame_time_ms});
-    std.debug.print("  Min frame time: {d:.3}ms\n", .{min_frame_time_ms});
-    std.debug.print("  Max frame time: {d:.3}ms\n", .{max_frame_time_ms});
-    std.debug.print("  FPS capability: {d:.1}\n", .{fps_capability});
+    std.debug.print("\nResults ({} frames with {} widgets each):\n", .{ test_frames, 8 });
+    std.debug.print("  Avg widget overhead: {d:.3}ms\n", .{avg_frame_time_ms});
+    std.debug.print("  Min widget overhead: {d:.3}ms\n", .{min_frame_time_ms});
+    std.debug.print("  Max widget overhead: {d:.3}ms\n", .{max_frame_time_ms});
+    std.debug.print("  Per-widget cost: {d:.3}μs\n", .{(avg_frame_time_ms * 1000.0) / 8.0});
 
-    // Verify design target: <4ms per frame (250 FPS)
-    const target_frame_time_ms = 4.0;
-    try testing.expect(avg_frame_time_ms < target_frame_time_ms);
+    // Verify widget processing overhead is minimal (<0.1ms for 8 widgets)
+    // This ensures the framework itself is efficient - rendering cost is additional
+    const target_overhead_ms = 0.1;
+    try testing.expect(avg_frame_time_ms < target_overhead_ms);
 
-    // Verify capable of 120+ FPS minimum
-    try testing.expect(fps_capability >= 120.0);
+    // Calculate theoretical max FPS if rendering takes realistic time
+    const realistic_render_time_ms = 0.3; // Conservative estimate for simple rendering
+    const total_realistic_frame_time = avg_frame_time_ms + realistic_render_time_ms;
+    const realistic_fps = 1000.0 / total_realistic_frame_time;
 
-    std.debug.print("\n✅ VERIFIED: Game loop achieves <4ms frame time target!\n", .{});
-    std.debug.print("   Average: {d:.3}ms/frame = {d:.0} FPS capability\n", .{ avg_frame_time_ms, fps_capability });
+    std.debug.print("\n✅ VERIFIED: Framework widget overhead is minimal (<0.1ms)!\n", .{});
+    std.debug.print("   Widget processing: {d:.3}ms for {} widgets\n", .{ avg_frame_time_ms, 8 });
+    std.debug.print("   Theoretical FPS with rendering (~0.3ms): {d:.0} FPS\n", .{realistic_fps});
+    std.debug.print("\n   NOTE: Actual performance depends on renderer (OpenGL/Vulkan/Software)\n", .{});
+    std.debug.print("         Typical immediate-mode GUIs achieve ~0.4ms total per frame\n", .{});
+    std.debug.print("         (Source: forrestthewoods.com/blog/proving-immediate-mode-guis-are-performant)\n", .{});
 }
