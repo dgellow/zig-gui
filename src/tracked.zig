@@ -175,14 +175,20 @@ pub fn findChangedFields(
         const field_ptr = &@field(state.*, field.name);
         const FieldType = @TypeOf(field_ptr.*);
 
-        if (@hasField(FieldType, "_v")) {
-            if (field_ptr._v != last_versions[i]) {
-                last_versions[i] = field_ptr._v;
-                if (changed_count < changed_buffer.len) {
-                    changed_buffer[changed_count] = i;
-                    changed_count += 1;
+        // Check if this field is a struct with _v member (is Tracked)
+        switch (@typeInfo(FieldType)) {
+            .Struct => {
+                if (@hasField(FieldType, "_v")) {
+                    if (field_ptr._v != last_versions[i]) {
+                        last_versions[i] = field_ptr._v;
+                        if (changed_count < changed_buffer.len) {
+                            changed_buffer[changed_count] = i;
+                            changed_count += 1;
+                        }
+                    }
                 }
-            }
+            },
+            else => {},
         }
     }
 
@@ -198,10 +204,16 @@ pub fn captureFieldVersions(state: anytype, versions: []u32) void {
         const field_ptr = &@field(state.*, field.name);
         const FieldType = @TypeOf(field_ptr.*);
 
-        if (@hasField(FieldType, "_v")) {
-            if (i < versions.len) {
-                versions[i] = field_ptr._v;
-            }
+        // Check if this field is a struct with _v member (is Tracked)
+        switch (@typeInfo(FieldType)) {
+            .Struct => {
+                if (@hasField(FieldType, "_v")) {
+                    if (i < versions.len) {
+                        versions[i] = field_ptr._v;
+                    }
+                }
+            },
+            else => {},
         }
     }
 }

@@ -145,6 +145,7 @@ pub const HeadlessPlatform = struct {
     max_frames: u32 = 1,
     injected_events: std.BoundedArray(Event, 64) = .{},
     render_calls: u32 = 0,
+    quit_sent: bool = false,
 
     pub fn init() HeadlessPlatform {
         return .{};
@@ -192,11 +193,13 @@ pub const HeadlessPlatform = struct {
             return self.injected_events.orderedRemove(0);
         }
 
-        // Otherwise, count frames and return quit when done
-        self.frame_count += 1;
-        if (self.frame_count > self.max_frames) {
+        // Check if we've exceeded max_frames
+        if (self.frame_count >= self.max_frames) {
             return Event{ .type = .quit };
         }
+
+        // Increment frame count for event-driven mode (each wait is a frame)
+        self.frame_count += 1;
         return Event{ .type = .redraw_needed };
     }
 
@@ -206,12 +209,23 @@ pub const HeadlessPlatform = struct {
         if (self.injected_events.len > 0) {
             return self.injected_events.orderedRemove(0);
         }
+
+        // Check if we've exceeded max_frames (for game loop mode)
+        // Only send quit event ONCE to avoid infinite loop in processEvents()
+        if (self.frame_count >= self.max_frames and !self.quit_sent) {
+            self.quit_sent = true;
+            return Event{ .type = .quit };
+        }
+
         return null;
     }
 
     fn presentImpl(ptr: *anyopaque) void {
         const self: *HeadlessPlatform = @ptrCast(@alignCast(ptr));
         self.render_calls += 1;
+
+        // Increment frame count on present (once per frame)
+        self.frame_count += 1;
     }
 };
 

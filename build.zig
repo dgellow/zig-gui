@@ -9,6 +9,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("lib/zlay/src/zlay.zig"),
     });
 
+    // Create zig-gui module for examples to import
+    const zig_gui_mod = b.addModule("zig-gui", .{
+        .root_source_file = b.path("src/root.zig"),
+    });
+    zig_gui_mod.addImport("zlay", zlay_mod);
+
     // Create static library
     const lib = b.addStaticLibrary(.{
         .name = "gui",
@@ -42,6 +48,45 @@ pub fn build(b: *std.Build) void {
     // Add run step
     const demo_step = b.step("demo", "Run the revolutionary data-oriented demo");
     demo_step.dependOn(&demo_run.step);
+
+    // ===== Examples =====
+
+    // Counter example (event-driven mode)
+    const counter_exe = b.addExecutable(.{
+        .name = "counter",
+        .root_source_file = b.path("examples/counter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    counter_exe.root_module.addImport("zig-gui", zig_gui_mod);
+    b.installArtifact(counter_exe);
+
+    const counter_run = b.addRunArtifact(counter_exe);
+    counter_run.step.dependOn(b.getInstallStep());
+
+    const counter_step = b.step("counter", "Run counter example (event-driven mode)");
+    counter_step.dependOn(&counter_run.step);
+
+    // Game HUD example (game loop mode)
+    const game_hud_exe = b.addExecutable(.{
+        .name = "game_hud",
+        .root_source_file = b.path("examples/game_hud.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    game_hud_exe.root_module.addImport("zig-gui", zig_gui_mod);
+    b.installArtifact(game_hud_exe);
+
+    const game_hud_run = b.addRunArtifact(game_hud_exe);
+    game_hud_run.step.dependOn(b.getInstallStep());
+
+    const game_hud_step = b.step("game-hud", "Run game HUD example (game loop mode)");
+    game_hud_step.dependOn(&game_hud_run.step);
+
+    // Run all examples
+    const examples_step = b.step("examples", "Run all examples");
+    examples_step.dependOn(&counter_run.step);
+    examples_step.dependOn(&game_hud_run.step);
 
     // ===== Tests and Benchmarks =====
 
