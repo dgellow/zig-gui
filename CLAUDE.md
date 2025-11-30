@@ -286,7 +286,7 @@ state.counter()       // comptime-generated getter
 state.setCounter(v)   // comptime-generated setter
 ```
 
-See [STATE_MANAGEMENT.md](docs/STATE_MANAGEMENT.md) for full design analysis.
+See [STATE_MANAGEMENT.md](STATE_MANAGEMENT.md) for full design analysis.
 
 ### Hot Reload Implementation
 
@@ -876,7 +876,7 @@ Claim: 4-14x faster         ✅ HONEST - same operations!
 
 ### Reference Implementation: zlay v2.0
 
-See [docs/LAYOUT_PERFORMANCE_RESULTS.md](docs/LAYOUT_PERFORMANCE_RESULTS.md) for the gold standard of honest validation:
+See [BENCHMARKS.md](BENCHMARKS.md) for the gold standard of honest validation:
 
 **What we did right:**
 - ✅ Measured ALL operations (tree traversal, cache, flexbox, SIMD, positioning)

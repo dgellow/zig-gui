@@ -4,7 +4,7 @@
 **Memory:** 176 bytes per element (2x better than target)
 **Status:** ✅ VALIDATED with 31 tests passing
 
-See `docs/LAYOUT_PERFORMANCE_RESULTS.md` for complete validation.
+See `BENCHMARKS.md` for complete validation.
 
 ---
 
@@ -332,10 +332,9 @@ Status: ✅ VALIDATED with 31 tests passing
 
 ## References
 
-- **Validation Results:** `docs/LAYOUT_PERFORMANCE_RESULTS.md`
-- **Architecture:** `docs/LAYOUT_ARCHITECTURE.md`
+- **Validation Results:** `BENCHMARKS.md`
+- **Architecture:** `ARCHITECTURE.md`
 - **Implementation:** `src/layout/engine.zig`
-- **Design Analysis:** `docs/LAYOUT_DESIGN_ANALYSIS.md`
 - **Honesty Principles:** `CLAUDE.md` (Honest Validation Principles)
 
 ---

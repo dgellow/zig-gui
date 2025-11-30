@@ -33,7 +33,7 @@ const std = @import("std");
 /// - Works identically across all execution modes (event-driven, game-loop, minimal)
 /// - Future-proof: can migrate to comptime Reactive(T) without breaking changes
 ///
-/// See docs/STATE_MANAGEMENT.md for full analysis.
+/// See STATE_MANAGEMENT.md for full analysis.
 pub fn Tracked(comptime T: type) type {
     return struct {
         /// The wrapped value

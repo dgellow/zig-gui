@@ -3,7 +3,7 @@
 **The first UI library to solve the impossible trinity of GUI development.**
 
 <p align="center">
-  <img src="./docs/mascot.png" alt="Zeph the Zalamander - zig-gui mascot" />
+  <img src="./mascot.png" alt="Zeph the Zalamander - zig-gui mascot" />
 </p>
 
 [![Build Status](https://github.com/your-org/zig-gui/workflows/CI/badge.svg)](https://github.com/your-org/zig-gui/actions)
@@ -216,7 +216,7 @@ fn myApp(gui: *GUI, state: *AppState) !void {
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-See [docs/STATE_MANAGEMENT.md](docs/STATE_MANAGEMENT.md) for the full design analysis comparing React, Flutter, SwiftUI, SolidJS, Svelte, ImGui, and Qt.
+See [STATE_MANAGEMENT.md](STATE_MANAGEMENT.md) for the full design analysis comparing React, Flutter, SwiftUI, SolidJS, Svelte, ImGui, and Qt.
 
 ## ✅ Verified Performance Claims
 
@@ -325,7 +325,7 @@ zig build profiling-demo
 zig build -Doptimize=ReleaseFast
 ```
 
-See [docs/PROFILING.md](docs/PROFILING.md) for complete documentation.
+See [PROFILING.md](PROFILING.md) for complete documentation.
 
 ### 🚀 World-Class C API
 Perfect for any language:
@@ -727,4 +727,4 @@ headless.injectClick(100, 100);  // Deterministic testing
 
 ---
 
-**[📖 Full Specification](docs/spec.md)** | **[🎯 State Management Design](docs/STATE_MANAGEMENT.md)** | **[🚀 Examples](examples/)** | **[⭐ Star on GitHub](https://github.com/your-org/zig-gui)**
+**[📖 Full Specification](SPEC.md)** | **[🎯 State Management Design](STATE_MANAGEMENT.md)** | **[🚀 Examples](examples/)** | **[⭐ Star on GitHub](https://github.com/your-org/zig-gui)**
