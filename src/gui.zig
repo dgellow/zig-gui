@@ -6,10 +6,16 @@ const Rect = @import("core/geometry.zig").Rect;
 const Point = @import("core/geometry.zig").Point;
 const Paint = @import("core/paint.zig").Paint;
 const LayoutEngine = @import("layout.zig").LayoutEngine;
+const FlexStyle = @import("layout.zig").FlexStyle;
+const FlexDirection = @import("layout.zig").FlexDirection;
+const JustifyContent = @import("layout.zig").JustifyContent;
+const AlignItems = @import("layout.zig").AlignItems;
 const StyleSystem = @import("style.zig").StyleSystem;
 const EventManager = @import("events.zig").EventManager;
 const AnimationSystem = @import("animation.zig").AnimationSystem;
 const AssetManager = @import("asset.zig").AssetManager;
+const WidgetId = @import("widget_id.zig").WidgetId;
+const IdStack = @import("widget_id.zig").IdStack;
 // const View = @import("components/view.zig").View; // Removed - moving to immediate-mode API
 const profiler = @import("profiler.zig");
 
@@ -106,6 +112,22 @@ pub const GUI = struct {
     /// Text formatting buffer (for fmt args)
     im_text_buffer: [1024]u8 = undefined,
 
+    // =========================================================================
+    // Layout API State
+    // =========================================================================
+
+    /// ID stack for hierarchical widget scoping
+    id_stack: IdStack,
+
+    /// Mapping from widget IDs to layout engine indices
+    widget_to_layout: std.AutoHashMap(u32, u32),
+
+    /// Stack of parent layout indices (for nested containers)
+    layout_parent_stack: std.BoundedArray(u32, 16),
+
+    /// Current parent for new layout elements
+    current_layout_parent: ?u32 = null,
+
     /// Initialize the GUI system (headless mode, no renderer)
     /// Use initWithRenderer() if you have a platform renderer ready.
     pub fn init(allocator: std.mem.Allocator, config: GUIConfig) !*GUI {
@@ -146,6 +168,10 @@ pub const GUI = struct {
             animation_system = try AnimationSystem.init(allocator, config.default_capacity);
         }
 
+        // Initialize layout API structures
+        var widget_to_layout = std.AutoHashMap(u32, u32).init(allocator);
+        errdefer widget_to_layout.deinit();
+
         gui.* = .{
             .allocator = allocator,
             .renderer = renderer,
@@ -156,6 +182,9 @@ pub const GUI = struct {
             .asset_manager = asset_manager,
             .config = config,
             .running = true,
+            .id_stack = IdStack.init(allocator),
+            .widget_to_layout = widget_to_layout,
+            .layout_parent_stack = .{},
         };
 
         return gui;
@@ -173,6 +202,10 @@ pub const GUI = struct {
         self.style_system.deinit();
         self.layout_engine.deinit();
         self.allocator.destroy(self.layout_engine);
+
+        // Clean up layout API structures
+        self.widget_to_layout.deinit();
+        self.id_stack.deinit();
 
         // Clean up self
         self.allocator.destroy(self);
@@ -706,6 +739,144 @@ pub const GUI = struct {
 
         // TODO: Draw container background/border
         // This would require tracking container bounds from beginContainer
+    }
+
+    // =========================================================================
+    // Layout API - Flexbox Integration
+    // =========================================================================
+
+    /// Push an ID scope (comptime string label)
+    /// Use with defer gui.popId() for automatic cleanup
+    ///
+    /// Example:
+    /// ```zig
+    /// gui.pushId("settings_panel");
+    /// defer gui.popId();
+    /// // ... widgets here have scoped IDs
+    /// ```
+    pub fn pushId(self: *GUI, comptime label: []const u8) void {
+        self.id_stack.push(label);
+    }
+
+    /// Push an ID scope (runtime string label)
+    /// For C API and dynamic cases
+    pub fn pushIdRuntime(self: *GUI, label: []const u8) void {
+        self.id_stack.pushRuntime(label);
+    }
+
+    /// Push an index onto the ID stack (for loops)
+    ///
+    /// Example:
+    /// ```zig
+    /// for (items, 0..) |item, i| {
+    ///     gui.pushIndex(i);
+    ///     defer gui.popId();
+    ///     // ... widgets for this item
+    /// }
+    /// ```
+    pub fn pushIndex(self: *GUI, index: usize) void {
+        self.id_stack.pushIndex(index);
+    }
+
+    /// Pop an ID scope
+    pub fn popId(self: *GUI) void {
+        self.id_stack.pop();
+    }
+
+    /// Begin a flexbox container with full styling options
+    /// This integrates the layout engine with the ID system
+    ///
+    /// Example:
+    /// ```zig
+    /// try gui.beginFlexContainer("main", .{
+    ///     .direction = .column,
+    ///     .justify_content = .center,
+    ///     .gap = 10,
+    /// });
+    /// defer gui.endFlexContainer();
+    ///
+    /// // Child widgets automatically become children in layout tree
+    /// try gui.text("Hello", .{});
+    /// ```
+    pub fn beginFlexContainer(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
+        // Combine label with current ID stack to get unique widget ID
+        const widget_id = self.id_stack.combineLabel(label);
+
+        // Add element to layout engine
+        const layout_index = try self.layout_engine.addElement(self.current_layout_parent, style);
+
+        // Store mapping from widget ID to layout index
+        try self.widget_to_layout.put(widget_id.hash, layout_index);
+
+        // Push this container's layout index onto parent stack
+        try self.layout_parent_stack.append(layout_index);
+        self.current_layout_parent = layout_index;
+
+        // Push ID for children to inherit
+        self.pushId(label);
+    }
+
+    /// End a flexbox container
+    pub fn endFlexContainer(self: *GUI) void {
+        // Pop ID scope
+        self.popId();
+
+        // Pop parent from stack
+        _ = self.layout_parent_stack.pop();
+        if (self.layout_parent_stack.len > 0) {
+            self.current_layout_parent = self.layout_parent_stack.buffer[self.layout_parent_stack.len - 1];
+        } else {
+            self.current_layout_parent = null;
+        }
+    }
+
+    /// Convenience: Begin a column container
+    pub fn beginColumn(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
+        var column_style = style;
+        column_style.direction = .column;
+        try self.beginFlexContainer(label, column_style);
+    }
+
+    /// Convenience: End a column container
+    pub fn endColumn(self: *GUI) void {
+        self.endFlexContainer();
+    }
+
+    /// Convenience: Begin a row container
+    pub fn beginFlexRow(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
+        var row_style = style;
+        row_style.direction = .row;
+        try self.beginFlexContainer(label, row_style);
+    }
+
+    /// Convenience: End a row container
+    pub fn endFlexRow(self: *GUI) void {
+        self.endFlexContainer();
+    }
+
+    /// Get the layout rect for a widget by its label
+    /// Useful for positioning or hit testing
+    pub fn getWidgetRect(self: *GUI, comptime label: []const u8) ?Rect {
+        const widget_id = self.id_stack.combineLabel(label);
+        const layout_index = self.widget_to_layout.get(widget_id.hash) orelse return null;
+        return self.layout_engine.getRect(layout_index);
+    }
+
+    /// Compute layout for all elements
+    /// Call this before rendering or after adding all widgets
+    pub fn computeLayout(self: *GUI) !void {
+        const width: f32 = @floatFromInt(self.config.window_width);
+        const height: f32 = @floatFromInt(self.config.window_height);
+        try self.layout_engine.computeLayout(width, height);
+    }
+
+    /// Begin a new frame - resets layout engine for immediate-mode usage
+    pub fn beginLayoutFrame(self: *GUI) void {
+        self.layout_engine.beginFrame();
+        self.id_stack.clear();
+        self.layout_parent_stack.len = 0;
+        self.current_layout_parent = null;
+        // Note: We don't clear widget_to_layout as it persists across frames
     }
 
     // =========================================================================
