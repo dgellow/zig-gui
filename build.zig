@@ -123,6 +123,21 @@ pub fn build(b: *std.Build) void {
     const rendering_benchmark_step = b.step("rendering-benchmark", "Run rendering benchmark (actual pixel drawing)");
     rendering_benchmark_step.dependOn(&rendering_benchmark_run.step);
 
+    // Multi-resolution benchmark (realistic layouts across different screen sizes)
+    const multi_res_benchmark_exe = b.addExecutable(.{
+        .name = "multi_res_benchmark",
+        .root_source_file = b.path("examples/multi_res_benchmark.zig"),
+        .target = target,
+        .optimize = .ReleaseFast, // Always optimize for accurate benchmarks
+    });
+    b.installArtifact(multi_res_benchmark_exe);
+
+    const multi_res_benchmark_run = b.addRunArtifact(multi_res_benchmark_exe);
+    multi_res_benchmark_run.step.dependOn(b.getInstallStep());
+
+    const multi_res_benchmark_step = b.step("multi-res-benchmark", "Run multi-resolution benchmark (mobile/desktop/4K)");
+    multi_res_benchmark_step.dependOn(&multi_res_benchmark_run.step);
+
     // Run all examples
     const examples_step = b.step("examples", "Run all examples");
     examples_step.dependOn(&counter_run.step);
