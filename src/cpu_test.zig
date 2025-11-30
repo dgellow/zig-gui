@@ -8,6 +8,7 @@
 const std = @import("std");
 const testing = std.testing;
 const app_mod = @import("app.zig");
+const gui_mod = @import("gui.zig");
 const tracked = @import("tracked.zig");
 const test_platform_mod = @import("test_platform.zig");
 
@@ -15,6 +16,7 @@ const App = app_mod.App;
 const HeadlessPlatform = app_mod.HeadlessPlatform;
 const BlockingTestPlatform = test_platform_mod.BlockingTestPlatform;
 const Event = app_mod.Event;
+const GUI = gui_mod.GUI;
 const Tracked = tracked.Tracked;
 
 /// Convert rusage to nanoseconds (user + system time)
@@ -158,4 +160,89 @@ test "HeadlessPlatform supports event injection for testing" {
     try testing.expect(e4 == null);
 
     std.debug.print("\n✅ HeadlessPlatform event injection works correctly\n", .{});
+}
+
+const GameState = struct {
+    frame_count: Tracked(u32) = .{ .value = 0 },
+    health: Tracked(i32) = .{ .value = 100 },
+    mana: Tracked(i32) = .{ .value = 50 },
+    score: Tracked(u64) = .{ .value = 0 },
+};
+
+fn gameUI(gui: *GUI, state: *GameState) !void {
+    _ = gui;
+    // Simulate typical game HUD rendering
+    state.frame_count.set(state.frame_count.get() + 1);
+
+    // Simulate state updates every frame
+    if (state.frame_count.get() % 10 == 0) {
+        state.health.set(state.health.get() - 1);
+        state.mana.set(state.mana.get() + 1);
+        state.score.set(state.score.get() + 100);
+    }
+}
+
+test "game loop mode: <4ms frame time (250 FPS capability)" {
+    std.debug.print("\n=== Testing Game Loop Performance ===\n", .{});
+
+    var platform = HeadlessPlatform.init();
+    platform.max_frames = 1001; // Run 1000 frames + initial
+
+    var app = try app_mod.App(GameState).init(
+        testing.allocator,
+        platform.interface(),
+        .{ .mode = .game_loop, .target_fps = 250 }, // Target 250 FPS (4ms)
+    );
+    defer app.deinit();
+
+    var state = GameState{};
+
+    // Measure 1000 frames
+    const test_frames: u32 = 1000;
+    var frame_times: [1000]i128 = undefined;
+
+    var frame_idx: u32 = 0;
+    while (frame_idx < test_frames) : (frame_idx += 1) {
+        const frame_start = std.time.nanoTimestamp();
+
+        // Simulate one game loop iteration
+        app.processEvents();
+        try app.renderFrame(gameUI, &state);
+
+        const frame_end = std.time.nanoTimestamp();
+        frame_times[frame_idx] = frame_end - frame_start;
+    }
+
+    // Calculate statistics
+    var total_time: i128 = 0;
+    var max_frame_time: i128 = 0;
+    var min_frame_time: i128 = std.math.maxInt(i128);
+
+    for (frame_times) |ft| {
+        total_time += ft;
+        if (ft > max_frame_time) max_frame_time = ft;
+        if (ft < min_frame_time) min_frame_time = ft;
+    }
+
+    const avg_frame_time_ns = @divTrunc(total_time, test_frames);
+    const avg_frame_time_ms = @as(f64, @floatFromInt(avg_frame_time_ns)) / std.time.ns_per_ms;
+    const max_frame_time_ms = @as(f64, @floatFromInt(max_frame_time)) / std.time.ns_per_ms;
+    const min_frame_time_ms = @as(f64, @floatFromInt(min_frame_time)) / std.time.ns_per_ms;
+    const fps_capability = 1000.0 / avg_frame_time_ms;
+
+    std.debug.print("\nResults ({} frames):\n", .{test_frames});
+    std.debug.print("  Avg frame time: {d:.3}ms\n", .{avg_frame_time_ms});
+    std.debug.print("  Min frame time: {d:.3}ms\n", .{min_frame_time_ms});
+    std.debug.print("  Max frame time: {d:.3}ms\n", .{max_frame_time_ms});
+    std.debug.print("  FPS capability: {d:.1}\n", .{fps_capability});
+
+    // Verify design target: <4ms per frame (250 FPS)
+    const target_frame_time_ms = 4.0;
+    try testing.expect(avg_frame_time_ms < target_frame_time_ms);
+
+    // Verify capable of 120+ FPS minimum
+    try testing.expect(fps_capability >= 120.0);
+
+    std.debug.print("\n✅ VERIFIED: Game loop achieves <4ms frame time target!\n", .{});
+    std.debug.print("   Average: {d:.3}ms/frame = {d:.0} FPS capability\n", .{ avg_frame_time_ms, fps_capability });
 }
