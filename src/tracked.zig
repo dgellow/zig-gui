@@ -121,9 +121,14 @@ pub fn computeStateVersion(state: anytype) u64 {
         const field_ptr = &@field(state.*, field.name);
         const FieldType = @TypeOf(field_ptr.*);
 
-        // Check if this field has a _v member (is Tracked)
-        if (@hasField(FieldType, "_v")) {
-            version +%= field_ptr._v;
+        // Check if this field is a struct with _v member (is Tracked)
+        switch (@typeInfo(FieldType)) {
+            .Struct => {
+                if (@hasField(FieldType, "_v")) {
+                    version +%= field_ptr._v;
+                }
+            },
+            else => {},
         }
     }
 

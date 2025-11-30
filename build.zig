@@ -72,11 +72,21 @@ pub fn build(b: *std.Build) void {
 
     const run_text_tests = b.addRunArtifact(text_tests);
 
+    // Create CPU usage verification test
+    const cpu_tests = b.addTest(.{
+        .root_source_file = b.path("src/cpu_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const run_cpu_tests = b.addRunArtifact(cpu_tests);
+
     // Test step that runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_zlay_tests.step);
     test_step.dependOn(&run_layout_tests.step);
     test_step.dependOn(&run_text_tests.step);
+    test_step.dependOn(&run_cpu_tests.step);
 
     // Performance benchmark
     const benchmark_exe = b.addExecutable(.{

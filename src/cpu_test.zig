@@ -59,7 +59,7 @@ test "event-driven mode: 0% CPU when idle (blocking verification)" {
     defer thread.join();
 
     // Measure CPU time BEFORE waiting
-    const rusage_before = try std.posix.getrusage(std.posix.rusage.SELF);
+    const rusage_before = std.posix.getrusage(0); // 0 = RUSAGE_SELF
     const cpu_before_ns = rusageToNanos(rusage_before);
     const wall_before = std.time.nanoTimestamp();
 
@@ -67,7 +67,7 @@ test "event-driven mode: 0% CPU when idle (blocking verification)" {
     const event = try platform.interface().waitEvent();
 
     // Measure CPU time AFTER waiting
-    const rusage_after = try std.posix.getrusage(std.posix.rusage.SELF);
+    const rusage_after = std.posix.getrusage(0); // 0 = RUSAGE_SELF
     const cpu_after_ns = rusageToNanos(rusage_after);
     const wall_after = std.time.nanoTimestamp();
 
@@ -86,7 +86,7 @@ test "event-driven mode: 0% CPU when idle (blocking verification)" {
     std.debug.print("  CPU usage: {d:.6}%\n", .{cpu_percent});
 
     // Verify event was received
-    try testing.expectEqual(Event.EventType.input, event.type);
+    try testing.expectEqual(app_mod.EventType.input, event.type);
 
     // Verify we actually waited ~100ms wall time
     try testing.expect(wall_delta_ms >= 90); // At least 90ms (accounting for scheduling jitter)
@@ -143,15 +143,15 @@ test "HeadlessPlatform supports event injection for testing" {
     // Poll events
     const e1 = platform.interface().pollEvent();
     try testing.expect(e1 != null);
-    try testing.expectEqual(Event.EventType.input, e1.?.type);
+    try testing.expectEqual(app_mod.EventType.input, e1.?.type);
 
     const e2 = platform.interface().pollEvent();
     try testing.expect(e2 != null);
-    try testing.expectEqual(Event.EventType.redraw_needed, e2.?.type);
+    try testing.expectEqual(app_mod.EventType.redraw_needed, e2.?.type);
 
     const e3 = platform.interface().pollEvent();
     try testing.expect(e3 != null);
-    try testing.expectEqual(Event.EventType.redraw_needed, e3.?.type);
+    try testing.expectEqual(app_mod.EventType.redraw_needed, e3.?.type);
 
     // No more events
     const e4 = platform.interface().pollEvent();
