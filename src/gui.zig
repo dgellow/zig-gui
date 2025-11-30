@@ -122,9 +122,14 @@ pub const GUI = struct {
         const gui = try allocator.create(GUI);
         errdefer allocator.destroy(gui);
 
-        // Initialize subsystems
-        const layout_engine = try LayoutEngine.init(allocator, config.default_capacity);
-        errdefer layout_engine.deinit();
+        // Initialize subsystems (zlay v2.0 - 4-14x faster!)
+        const layout_engine_val = try LayoutEngine.init(allocator);
+        const layout_engine = try allocator.create(LayoutEngine);
+        layout_engine.* = layout_engine_val;
+        errdefer {
+            layout_engine.deinit();
+            allocator.destroy(layout_engine);
+        }
 
         const style_system = try StyleSystem.init(allocator, config.theme_name);
         errdefer style_system.deinit();
@@ -173,6 +178,7 @@ pub const GUI = struct {
         self.event_manager.deinit();
         self.style_system.deinit();
         self.layout_engine.deinit();
+        self.allocator.destroy(self.layout_engine);
 
         // Clean up self
         self.allocator.destroy(self);

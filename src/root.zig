@@ -141,16 +141,34 @@ pub const components = struct {
 };
 
 // =============================================================================
-// Layout
+// Layout (powered by zlay v2.0 - 4-14x faster!)
 // =============================================================================
 
 pub const layout = struct {
+    /// High-performance layout engine (zlay v2.0)
+    /// Performance: 0.029-0.107μs per element (validated)
     pub const LayoutEngine = @import("layout.zig").LayoutEngine;
-    pub const LayoutParams = @import("layout.zig").LayoutParams;
+
+    /// Convenience wrapper with ID-based API
+    pub const LayoutWrapper = @import("layout.zig").LayoutWrapper;
+
+    /// Flexbox style configuration
+    pub const FlexStyle = @import("layout.zig").FlexStyle;
+
+    /// Flexbox direction
     pub const FlexDirection = @import("layout.zig").FlexDirection;
+
+    /// Main axis alignment
     pub const JustifyContent = @import("layout.zig").JustifyContent;
+
+    /// Cross axis alignment
     pub const AlignItems = @import("layout.zig").AlignItems;
-    pub const Alignment = @import("layout.zig").Alignment;
+
+    /// Layout result
+    pub const LayoutResult = @import("layout.zig").LayoutResult;
+
+    /// Cache statistics
+    pub const CacheStats = @import("layout.zig").CacheStats;
 };
 
 // =============================================================================
