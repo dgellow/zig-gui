@@ -31,6 +31,13 @@ pub const Style = @import("style.zig").Style;
 // Element types (for backwards compatibility)
 pub const ElementType = @import("layout_engine.zig").ElementType;
 
+// v2.0 Layout Engine (optimized, validated components)
+pub const dirty_tracking = @import("dirty_tracking.zig");
+pub const simd = @import("simd.zig");
+pub const cache = @import("cache.zig");
+pub const flexbox = @import("flexbox.zig");
+pub const layout_engine_v2 = @import("layout_engine_v2.zig");
+
 /// Initialize a new zlay context with default viewport
 pub fn init(allocator: std.mem.Allocator) !*Context {
     return Context.init(allocator, Size{ .width = 800, .height = 600 });
