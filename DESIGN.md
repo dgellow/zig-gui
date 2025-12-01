@@ -201,6 +201,32 @@ zig-gui uses a **hybrid ID system** that provides zero-cost IDs for Zig users wh
 | Debuggable | Debug-only string storage |
 | Embedded (32KB) | 4 bytes per ID, fixed-size stack |
 
+### Layered Architecture
+
+The key insight: **widget functions take `u32` hashes, not strings.** The string→hash conversion happens at different times depending on the platform:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Zig Convenience Layer                                       │
+│  widget("Save", style) → widgetCore(0x7a3b2c1d, style)      │
+│  Hash computed at compile time - zero runtime cost           │
+├─────────────────────────────────────────────────────────────┤
+│  C API Exports                                               │
+│  zgl_gui_widget(gui, id, style)  ← takes u32 directly       │
+│  zgl_id("Save") → 0x7a3b2c1d     ← runtime hash helper      │
+├─────────────────────────────────────────────────────────────┤
+│  Core Implementation (shared)                                │
+│  widgetCore(id: u32, style) → reconciliation + layout        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Platform | When Hashing Happens | Cost |
+|----------|---------------------|------|
+| Zig | Compile time | Zero |
+| WASM | Build time (babel/esbuild plugin) | Zero |
+| C API | Runtime (`zgl_id()`) | ~10ns per call |
+| Python | Runtime (in binding) | ~10ns per call |
+
 ### Core Types
 
 ```zig
@@ -225,9 +251,57 @@ pub const WidgetId = packed struct {
 };
 ```
 
-### ID Stack
+### Widget Function Variants
 
-Hierarchical scoping for complex UIs:
+Zig provides three entry points for different use cases:
+
+```zig
+// 1. Comptime string (99% of calls) - zero runtime cost
+pub fn widget(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
+    return self.widgetCore(comptime WidgetId.from(label).hash, style);
+}
+
+// 2. Runtime string (rare - user-generated content, localization)
+pub fn widgetDynamic(self: *GUI, label: []const u8, style: FlexStyle) !void {
+    return self.widgetCore(WidgetId.runtime(label).hash, style);
+}
+
+// 3. Pre-computed ID (C API interop, cached IDs)
+pub fn widgetById(self: *GUI, id: u32, style: FlexStyle) !void {
+    return self.widgetCore(id, style);
+}
+
+// Core implementation - shared by all variants
+fn widgetCore(self: *GUI, id_hash: u32, style: FlexStyle) !void {
+    const final_id = self.id_stack.combine(id_hash);
+    const layout_idx = try self.getOrCreateElement(final_id, .widget, style);
+    self.seen_this_frame.set(layout_idx);
+}
+```
+
+### Container Scoping
+
+`begin()` **automatically pushes its ID onto the scope stack**. Child widgets inherit the parent's scope without explicit `pushId()`:
+
+```zig
+gui.begin("toolbar", .{ .direction = .row });  // Pushes "toolbar" scope
+defer gui.end();                                // Pops scope
+
+// These buttons get IDs: hash("toolbar") ^ hash("file"), etc.
+if (try gui.button("file")) { ... }
+if (try gui.button("edit")) { ... }
+
+gui.begin("submenu", .{});  // Pushes "submenu", scope is now toolbar > submenu
+defer gui.end();
+
+if (try gui.button("copy")) { ... }  // ID: toolbar ^ submenu ^ copy
+```
+
+This matches React/SwiftUI mental model and reduces boilerplate vs manual `pushId`/`popId`.
+
+### ID Stack (Internal)
+
+Hierarchical scoping implementation:
 
 ```zig
 pub const IdStack = struct {
@@ -235,7 +309,7 @@ pub const IdStack = struct {
     depth: u8 = 0,
     current_hash: u32 = 0,
 
-    // Debug only
+    // Debug only - for collision diagnostics
     debug_path: if (builtin.mode == .Debug) std.ArrayList([]const u8) else void,
 
     pub fn push(self: *IdStack, comptime label: []const u8) void {
@@ -244,7 +318,8 @@ pub const IdStack = struct {
     }
 
     pub fn pushIndex(self: *IdStack, index: usize) void {
-        self.pushHash(@truncate(index));
+        // Add 1 so index 0 produces non-zero contribution
+        self.pushHash(@truncate(index +% 1));
     }
 
     pub fn pop(self: *IdStack) void {
@@ -259,32 +334,41 @@ pub const IdStack = struct {
 };
 ```
 
-### Zig Usage (Zero Cost)
+### Zig Usage Examples
 
 ```zig
 fn myApp(gui: *GUI, state: *AppState) !void {
-    // Simple: label is ID (hash computed at comptime)
+    // Simple widget - comptime hash
     if (try gui.button("Settings")) {
         // ...
     }
 
-    // Scoped: hierarchical IDs
-    try gui.pushId("settings_panel");
-    defer gui.popId();
+    // Container with automatic scoping
+    gui.begin("settings_panel", .{ .direction = .column });
+    defer gui.end();
 
-    if (try gui.button("Save")) {   // ID = hash("settings_panel") ^ hash("Save")
+    // ID = hash("settings_panel") ^ hash("Save")
+    if (try gui.button("Save")) {
         // ...
     }
 
-    // Loops: index-based composition
+    // Loops with index-based IDs
     for (state.items.items, 0..) |item, i| {
-        gui.pushIndex(i);
-        defer gui.popId();
+        gui.beginIndexed("item", i, .{ .height = 40 });
+        defer gui.end();
 
         try gui.text(item.name);
-        if (try gui.button("Delete")) {  // ID = hash("settings_panel") ^ i ^ hash("Delete")
+        // ID = settings_panel ^ item ^ i ^ Delete
+        if (try gui.button("Delete")) {
             state.items.ptr().orderedRemove(i);
         }
+    }
+
+    // Runtime string (rare - e.g., user-defined tab names)
+    for (state.custom_tabs.items) |tab| {
+        gui.beginDynamic(tab.name, .{});
+        defer gui.end();
+        // ...
     }
 }
 ```
@@ -296,7 +380,7 @@ In debug builds, collision detection and path tracing:
 ```zig
 // Debug mode only
 pub fn debugIdPath(self: *const GUI) []const u8 {
-    // Returns: "settings_panel > 3 > Delete"
+    // Returns: "settings_panel > item[3] > Delete"
 }
 
 // Collision detection warns on stderr:
@@ -1001,30 +1085,41 @@ ZglGui* gui = zgl_gui_create(&(ZglGuiConfig){
     .viewport_height = 600,
 });
 
+// Cache IDs at init time (or use static initialization)
+// This avoids repeated hashing in the render loop
+static ZglId id_toolbar, id_file, id_edit, id_view, id_content;
+id_toolbar = zgl_id("toolbar");
+id_file = zgl_id("file");
+id_edit = zgl_id("edit");
+id_view = zgl_id("view");
+id_content = zgl_id("content");
+
 while (running) {
     zgl_gui_set_mouse(gui, mouse_x, mouse_y, mouse_down);
     zgl_gui_begin_frame(gui);
 
-    // Toolbar
+    // Toolbar - begin() auto-pushes ID scope
     ZglStyle toolbar = { .direction = ZGL_ROW, .height = 48, .gap = 8 };
-    zgl_gui_begin(gui, zgl_id("toolbar"), &toolbar);
+    zgl_gui_begin(gui, id_toolbar, &toolbar);
     {
         ZglStyle button = { .width = 80, .height = 32 };
 
-        zgl_gui_widget(gui, zgl_id("file"), &button);
-        if (zgl_gui_clicked(gui, zgl_id("file"))) {
+        // Child IDs are scoped: toolbar ^ file, toolbar ^ edit, etc.
+        zgl_gui_widget(gui, id_file, &button);
+        if (zgl_gui_clicked(gui, id_file)) {
             open_file_menu();
         }
 
-        zgl_gui_widget(gui, zgl_id("edit"), &button);
-        zgl_gui_widget(gui, zgl_id("view"), &button);
+        zgl_gui_widget(gui, id_edit, &button);
+        zgl_gui_widget(gui, id_view, &button);
     }
-    zgl_gui_end(gui);
+    zgl_gui_end(gui);  // Pops toolbar scope
 
-    // Dynamic list
-    zgl_gui_begin(gui, zgl_id("content"), &ZGL_STYLE_DEFAULT);
+    // Dynamic list - use zgl_id_index for loops
+    zgl_gui_begin(gui, id_content, &ZGL_STYLE_DEFAULT);
     {
         for (int i = 0; i < item_count; i++) {
+            // zgl_id_index combines base + index efficiently
             ZglId item_id = zgl_id_index("item", i);
             zgl_gui_widget(gui, item_id, &item_style);
 
@@ -1041,6 +1136,8 @@ while (running) {
 
 zgl_gui_destroy(gui);
 ```
+
+**Best practice**: Cache frequently-used IDs as static variables. The `zgl_id()` function is pure (~10ns), but caching eliminates even that overhead in hot loops.
 
 ---
 
@@ -1059,17 +1156,22 @@ pub fn main() !void {
         gui.beginFrame();
         defer gui.endFrame();
 
-        // Comptime ID hashing - zero runtime cost
+        // begin() auto-pushes ID scope + comptime hash
         gui.begin("toolbar", .{ .direction = .row, .height = 48 });
         defer gui.end();
 
-        if (gui.widget("file", .{ .width = 80 }).clicked()) {
+        if (gui.button("file")) {  // ID: toolbar ^ file
             try openFileMenu();
         }
 
-        for (items, 0..) |_, i| {
-            if (gui.widget("item", i, .{ .height = 40 }).clicked()) {
-                selectItem(i);
+        // For loops: use beginIndexed
+        for (items, 0..) |item, i| {
+            gui.beginIndexed("item", i, .{ .height = 40 });
+            defer gui.end();
+
+            try gui.text(item.name);
+            if (gui.button("delete")) {  // ID: toolbar ^ item ^ i ^ delete
+                items.remove(i);
             }
         }
     }
@@ -1108,15 +1210,25 @@ while running:
     gui.set_mouse(mouse_x, mouse_y, mouse_down)
 
     with gui.frame():
+        # container() auto-pushes ID scope
         with gui.container("toolbar", direction="row", height=48):
             if gui.widget("file", width=80, height=32).clicked:
                 open_file_menu()
 
         with gui.container("content"):
             for i, item in enumerate(items):
-                if gui.widget(f"item_{i}", height=40).clicked:
+                # Use widget_indexed for loops - avoids string allocation
+                # ID = content ^ item ^ i (computed efficiently)
+                if gui.widget_indexed("item", i, height=40).clicked:
                     select_item(i)
+
+        # For user-generated content, use widget_dynamic
+        for tab in user_tabs:
+            with gui.container_dynamic(tab.name):
+                render_tab_content(tab)
 ```
+
+**Best practice**: Use `widget_indexed("base", i)` for loops instead of f-strings like `f"item_{i}"`. This avoids string allocation and uses efficient index-based hashing.
 
 ### Embedded (32KB RAM)
 
