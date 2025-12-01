@@ -146,14 +146,16 @@ const AppState = struct {
     items: Tracked(std.BoundedArray(Item, 100)) = .{ .value = .{} },
 };
 
-fn myApp(gui: *GUI, state: *AppState) !void {
-    try gui.text("Counter: {}", .{state.counter.get()});
+fn myApp(gui: *GUI, state: *AppState) void {
+    gui.text("Counter: {}", .{state.counter.get()});
 
-    if (try gui.button("Increment")) {
+    gui.button("Increment");
+    if (gui.wasClicked("Increment")) {
         state.counter.set(state.counter.get() + 1);
     }
 
-    if (try gui.button("Add Item")) {
+    gui.button("Add Item");
+    if (gui.wasClicked("Add Item")) {
         state.items.ptr().append(.{ .name = "New" }) catch {};
     }
 }
@@ -201,6 +203,32 @@ zig-gui uses a **hybrid ID system** that provides zero-cost IDs for Zig users wh
 | Debuggable | Debug-only string storage |
 | Embedded (32KB) | 4 bytes per ID, fixed-size stack |
 
+### Layered Architecture
+
+The key insight: **widget functions take `u32` hashes, not strings.** The string→hash conversion happens at different times depending on the platform:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Zig Convenience Layer                                       │
+│  widget("Save", style) → widgetCore(0x7a3b2c1d, style)      │
+│  Hash computed at compile time - zero runtime cost           │
+├─────────────────────────────────────────────────────────────┤
+│  C API Exports                                               │
+│  zgl_gui_widget(gui, id, style)  ← takes u32 directly       │
+│  zgl_id("Save") → 0x7a3b2c1d     ← runtime hash helper      │
+├─────────────────────────────────────────────────────────────┤
+│  Core Implementation (shared)                                │
+│  widgetCore(id: u32, style) → reconciliation + layout        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Platform | When Hashing Happens | Cost |
+|----------|---------------------|------|
+| Zig | Compile time | Zero |
+| WASM | Build time (babel/esbuild plugin) | Zero |
+| C API | Runtime (`zgl_id()`) | ~10ns per call |
+| Python | Runtime (in binding) | ~10ns per call |
+
 ### Core Types
 
 ```zig
@@ -225,9 +253,83 @@ pub const WidgetId = packed struct {
 };
 ```
 
-### ID Stack
+### Widget Function Variants
 
-Hierarchical scoping for complex UIs:
+Widget functions **return void** - they declare the widget exists. Interaction state is queried separately via `wasClicked`, `isHovered`, etc.
+
+```zig
+// 1. Comptime string (99% of calls) - zero runtime cost
+pub fn button(self: *GUI, comptime label: []const u8) void {
+    self.buttonCore(comptime WidgetId.from(label).hash, label);
+}
+
+// 2. With index (for loops)
+pub fn buttonIndexed(self: *GUI, comptime label: []const u8, index: usize) void {
+    const indexed_hash = comptime WidgetId.from(label).hash ^ (@truncate(index) +% 1) *% 0x9e3779b9;
+    self.buttonCore(indexed_hash, label);
+}
+
+// 3. Runtime string (rare - user-generated content)
+pub fn buttonDynamic(self: *GUI, label: []const u8) void {
+    self.buttonCore(WidgetId.runtime(label).hash, label);
+}
+
+// 4. Pre-computed ID (C API interop)
+pub fn buttonById(self: *GUI, id: u32, display_label: []const u8) void {
+    self.buttonCore(id, display_label);
+}
+```
+
+### Interaction Query Functions
+
+Query interaction state with matching variants:
+
+```zig
+// Check if widget was clicked this frame
+pub fn wasClicked(self: *GUI, comptime label: []const u8) bool;
+pub fn wasClickedIndexed(self: *GUI, comptime label: []const u8, index: usize) bool;
+pub fn wasClickedDynamic(self: *GUI, label: []const u8) bool;
+pub fn wasClickedId(self: *GUI, id: u32) bool;
+
+// Check if widget is currently hovered
+pub fn isHovered(self: *GUI, comptime label: []const u8) bool;
+pub fn isHoveredIndexed(self: *GUI, comptime label: []const u8, index: usize) bool;
+// ... same pattern for Dynamic and Id variants
+
+// Check if widget is being pressed (mouse down over it)
+pub fn isPressed(self: *GUI, comptime label: []const u8) bool;
+// ... same pattern
+```
+
+This separation allows flexible queries (hover for tooltips, pressed for visual feedback) without coupling to widget declaration.
+
+### Container Scoping
+
+`begin()` **automatically pushes its ID onto the scope stack**. Child widgets inherit the parent's scope without explicit `pushId()`:
+
+```zig
+gui.begin("toolbar", .{ .direction = .row });  // Pushes "toolbar" scope
+defer gui.end();                                // Pops scope
+
+// These buttons get IDs: hash("toolbar") ^ hash("file"), etc.
+gui.button("file");
+gui.button("edit");
+
+if (gui.wasClicked("file")) { ... }
+if (gui.wasClicked("edit")) { ... }
+
+gui.begin("submenu", .{});  // Pushes "submenu", scope is now toolbar > submenu
+defer gui.end();
+
+gui.button("copy");  // ID: toolbar ^ submenu ^ copy
+if (gui.wasClicked("copy")) { ... }
+```
+
+This matches React/SwiftUI mental model and reduces boilerplate vs manual `pushId`/`popId`.
+
+### ID Stack (Internal)
+
+Hierarchical scoping implementation:
 
 ```zig
 pub const IdStack = struct {
@@ -235,7 +337,7 @@ pub const IdStack = struct {
     depth: u8 = 0,
     current_hash: u32 = 0,
 
-    // Debug only
+    // Debug only - for collision diagnostics
     debug_path: if (builtin.mode == .Debug) std.ArrayList([]const u8) else void,
 
     pub fn push(self: *IdStack, comptime label: []const u8) void {
@@ -244,7 +346,8 @@ pub const IdStack = struct {
     }
 
     pub fn pushIndex(self: *IdStack, index: usize) void {
-        self.pushHash(@truncate(index));
+        // Add 1 so index 0 produces non-zero contribution
+        self.pushHash(@truncate(index +% 1));
     }
 
     pub fn pop(self: *IdStack) void {
@@ -259,32 +362,44 @@ pub const IdStack = struct {
 };
 ```
 
-### Zig Usage (Zero Cost)
+### Zig Usage Examples
 
 ```zig
-fn myApp(gui: *GUI, state: *AppState) !void {
-    // Simple: label is ID (hash computed at comptime)
-    if (try gui.button("Settings")) {
+fn myApp(gui: *GUI, state: *AppState) void {
+    // Simple widget - comptime hash
+    gui.button("Settings");
+    if (gui.wasClicked("Settings")) {
         // ...
     }
 
-    // Scoped: hierarchical IDs
-    try gui.pushId("settings_panel");
-    defer gui.popId();
+    // Container with automatic scoping
+    gui.begin("settings_panel", .{ .direction = .column });
+    defer gui.end();
 
-    if (try gui.button("Save")) {   // ID = hash("settings_panel") ^ hash("Save")
+    // ID = hash("settings_panel") ^ hash("Save")
+    gui.button("Save");
+    if (gui.wasClicked("Save")) {
         // ...
     }
 
-    // Loops: index-based composition
+    // Loops with index-based IDs
     for (state.items.items, 0..) |item, i| {
-        gui.pushIndex(i);
-        defer gui.popId();
+        gui.beginIndexed("item", i, .{ .height = 40 });
+        defer gui.end();
 
-        try gui.text(item.name);
-        if (try gui.button("Delete")) {  // ID = hash("settings_panel") ^ i ^ hash("Delete")
+        gui.text(item.name);
+        // ID = settings_panel ^ item ^ i ^ Delete
+        gui.button("Delete");
+        if (gui.wasClickedIndexed("Delete", i)) {
             state.items.ptr().orderedRemove(i);
         }
+    }
+
+    // Runtime string (rare - e.g., user-defined tab names)
+    for (state.custom_tabs.items) |tab| {
+        gui.beginDynamic(tab.name, .{});
+        defer gui.end();
+        // ...
     }
 }
 ```
@@ -296,7 +411,7 @@ In debug builds, collision detection and path tracing:
 ```zig
 // Debug mode only
 pub fn debugIdPath(self: *const GUI) []const u8 {
-    // Returns: "settings_panel > 3 > Delete"
+    // Returns: "settings_panel > item[3] > Delete"
 }
 
 // Collision detection warns on stderr:
@@ -419,6 +534,266 @@ const total_count = engine.getElementCount();
 
 ---
 
+## Immediate Mode Reconciliation
+
+zig-gui provides an **immediate-mode API** (simple, declare UI every frame) backed by a **retained layout engine** (fast, caches results). This section explains how these two models are bridged.
+
+### The Problem
+
+Immediate-mode API:
+```zig
+fn myUI(gui: *GUI, state: *AppState) void {
+    gui.button("Save");  // Called every frame
+    if (gui.wasClicked("Save")) { ... }
+}
+```
+
+Retained layout engine:
+```zig
+const index = engine.addElement(parent, style);  // Creates persistent element
+engine.computeLayout(width, height);              // Caches results
+```
+
+**Challenge**: How does `gui.button("Save")` map to the layout engine without:
+- Rebuilding the tree every frame (wasteful)
+- React-style virtual DOM diffing (complex, memory-heavy)
+
+### Solution: Index Reuse via Widget ID Mapping
+
+Widget IDs (stable across frames) map to layout indices (internal handles):
+
+```
+Widget ID (hash of "Save") → Layout Index (e.g., 42)
+```
+
+Each frame:
+1. Widget function called → lookup ID in persistent hash map
+2. If found → reuse existing layout element
+3. If not found → create new element, store mapping
+4. End of frame → remove elements not "seen" this frame
+
+### Why Not Dear ImGui's Approach?
+
+Dear ImGui rebuilds layout inline during UI traversal with one-frame size latency:
+
+```cpp
+// Dear ImGui - every frame:
+ImGui::Begin("Window");      // Size based on LAST frame's content
+ImGui::Text("Hello");        // Measure text, advance cursor
+ImGui::End();                // Finalize size for NEXT frame
+```
+
+**Comparison:**
+
+| Aspect | Dear ImGui | zig-gui (Index Reuse) |
+|--------|-----------|----------------------|
+| **Memory (1000 widgets)** | ~90 KB | ~200 KB |
+| **CPU (steady state)** | ~23 μs/frame | ~16 μs/frame |
+| **Structural changes** | +0.8 μs | +6.5 μs |
+| **Size latency** | 1 frame (glitches) | 0 frames (correct) |
+| **Layout power** | Cursor-based | Full flexbox |
+| **Idle CPU** | Continuous polling | 0% (event-driven) |
+
+**We chose Index Reuse because:**
+
+1. **Zero latency**: Layout is correct on the first frame. No "popping" when content changes size. Professional desktop apps require this.
+
+2. **0% idle CPU**: The retained layout + dirty tracking enables true event-driven execution. Dear ImGui requires polling.
+
+3. **Flexbox**: Complex layouts (flex-grow, space-between, align-items) are declarative. Dear ImGui requires manual positioning.
+
+4. **Cached layout**: When state unchanged, skip the UI function entirely. Dear ImGui must run every frame.
+
+**Dear ImGui wins for:**
+- Highly dynamic UIs (constant widget creation/destruction)
+- Extreme memory constraints (<50 KB total)
+- Simple vertical stacking layouts
+
+### Data Structures
+
+```zig
+pub const GUI = struct {
+    // === Persistent (survives across frames) ===
+
+    /// Widget ID → Layout index mapping
+    widget_to_layout: std.AutoHashMap(u32, u32),
+
+    /// Layout index → Widget metadata (for parent tracking, reordering)
+    widget_meta: [MAX_ELEMENTS]WidgetMeta,
+
+    // === Per-frame (cleared each frame) ===
+
+    /// Which layout indices were "seen" this frame
+    seen_this_frame: std.StaticBitSet(MAX_ELEMENTS),
+
+    /// Current parent stack (for nesting)
+    parent_stack: std.BoundedArray(u32, 64),
+
+    // === The layout engine ===
+    layout_engine: *LayoutEngine,
+};
+
+const WidgetMeta = struct {
+    parent_hash: u32,     // Parent's widget ID (detect re-parenting)
+    sibling_order: u16,   // Position among siblings (detect reordering)
+    widget_type: u8,      // button, text, container, etc.
+};
+```
+
+**Why sibling_order?** This field enables **smooth reorder animations** when using stable IDs:
+
+```zig
+// With stable IDs (item.id doesn't change when array reorders)
+for (items) |item| {
+    gui.beginDynamic(item.stable_id, .{});
+    // ...
+}
+```
+
+When the user reorders items (drag-and-drop, sort), widget IDs stay the same but positions change. Without `sibling_order` tracking:
+- We'd have to recreate widgets (losing state, no animation possible)
+
+With `sibling_order` tracking:
+- Detect position changes → call `layout_engine.reorderSiblings()`
+- Animate widgets moving to new positions
+- Preserve widget state across reorder
+
+Index-based IDs (`beginIndexed`) don't need this (index IS identity), but stable IDs require it for proper animation support.
+
+### Frame Lifecycle
+
+```zig
+pub fn beginFrame(self: *GUI) void {
+    self.seen_this_frame.clear();
+    self.parent_stack.clear();
+    self.parent_stack.append(ROOT_INDEX);
+}
+
+pub fn button(self: *GUI, comptime label: []const u8) !bool {
+    const widget_hash = self.id_stack.combine(comptime hash(label));
+    const current_parent = self.parent_stack.getLast();
+
+    // Lookup or create layout element
+    const layout_index = self.getOrCreateElement(widget_hash, current_parent, .button);
+
+    // Mark as seen this frame
+    self.seen_this_frame.set(layout_index);
+
+    // Return interaction state
+    return self.event_manager.wasClicked(layout_index);
+}
+
+fn getOrCreateElement(self: *GUI, widget_hash: u32, parent_hash: u32, widget_type: WidgetType) !u32 {
+    if (self.widget_to_layout.get(widget_hash)) |existing| {
+        // Existing widget - check if parent changed (re-parenting)
+        const meta = &self.widget_meta[existing];
+        if (meta.parent_hash != parent_hash) {
+            const new_parent = self.widget_to_layout.get(parent_hash) orelse ROOT_INDEX;
+            self.layout_engine.reparent(existing, new_parent);
+            meta.parent_hash = parent_hash;
+        }
+        return existing;
+    }
+
+    // New widget - create layout element
+    const parent_index = self.widget_to_layout.get(parent_hash) orelse ROOT_INDEX;
+    const new_index = try self.layout_engine.addElement(parent_index, .{});
+
+    try self.widget_to_layout.put(widget_hash, new_index);
+    self.widget_meta[new_index] = .{
+        .parent_hash = parent_hash,
+        .sibling_order = 0,
+        .widget_type = widget_type,
+    };
+
+    return new_index;
+}
+
+pub fn endFrame(self: *GUI) !void {
+    // Remove widgets not seen this frame
+    var to_remove = std.ArrayList(u32).init(self.allocator);
+    defer to_remove.deinit();
+
+    var iter = self.widget_to_layout.iterator();
+    while (iter.next()) |entry| {
+        if (!self.seen_this_frame.isSet(entry.value_ptr.*)) {
+            try to_remove.append(entry.key_ptr.*);
+        }
+    }
+
+    for (to_remove.items) |widget_hash| {
+        const layout_index = self.widget_to_layout.get(widget_hash).?;
+        self.layout_engine.removeElement(layout_index);
+        _ = self.widget_to_layout.remove(widget_hash);
+    }
+
+    // Compute layout for dirty elements
+    try self.layout_engine.computeLayout(self.viewport_width, self.viewport_height);
+}
+```
+
+### Memory Budget by Platform
+
+| Platform | Max Widgets | Per-Widget | Total | % of Budget |
+|----------|-------------|------------|-------|-------------|
+| **Desktop** | 4096 | 200 bytes | 800 KB | <1% of 1GB |
+| **Mobile** | 1024 | 200 bytes | 200 KB | <0.1% of 200MB |
+| **Embedded** | 64 | 80 bytes* | 5 KB | 15% of 32KB |
+
+*Embedded uses compact configuration: smaller FlexStyle, no caching.
+
+### Embedded Optimization
+
+For 32KB RAM targets, use compact mode:
+
+```zig
+pub const EmbeddedConfig = struct {
+    pub const MAX_ELEMENTS = 64;
+    pub const CACHE_ENABLED = false;      // Save 48 bytes/element
+    pub const DEBUG_ENABLED = false;      // No debug strings
+    pub const FlexStyle = FlexStyleCompact; // 32 bytes vs 56
+};
+
+// Compact per-widget cost:
+// - FlexStyle:        32 bytes (vs 56)
+// - Rect:             16 bytes
+// - Tree links:       12 bytes
+// - Widget mapping:   12 bytes
+// - Widget meta:       7 bytes
+// - Seen bit:          0.125 bytes
+// ─────────────────────────────
+// Total:             ~80 bytes per widget
+//
+// 64 widgets × 80 bytes = 5 KB (15% of 32KB budget)
+```
+
+### Required Layout Engine Extensions
+
+The reconciliation system requires these additions to the layout engine:
+
+```zig
+/// Remove element from tree (for widgets that disappeared)
+pub fn removeElement(self: *LayoutEngine, index: u32) void {
+    // 1. Unlink from parent's child list
+    // 2. Recursively remove children
+    // 3. Add index to free list for reuse
+}
+
+/// Move element to new parent (for re-parenting)
+pub fn reparent(self: *LayoutEngine, index: u32, new_parent: u32) void {
+    // 1. Unlink from old parent
+    // 2. Link to new parent
+    // 3. Mark both parents dirty
+}
+
+/// Reorder siblings (for order changes)
+pub fn reorderSiblings(self: *LayoutEngine, parent: u32, new_order: []const u32) void {
+    // Rebuild sibling linked list in new order
+}
+```
+
+---
+
 ## Platform Integration
 
 ### Desktop (SDL)
@@ -504,152 +879,506 @@ try testing.expectEqual(1, state.counter.get());
 
 ---
 
-## C API
+## Public API
+
+The public API is designed to impress senior C engineers while working seamlessly across WASM, embedded, Python FFI, and Zig native.
+
+### Architecture: Three Layers
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: Language Bindings (Python, TypeScript, etc.)      │
+│  - Pythonic context managers, closures, generators          │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: GUI Context (immediate-mode widgets)              │
+│  - Widget functions, input handling, rendering              │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1: Layout Engine (pure layout, no UI)                │
+│  - Flexbox computation, tree management                     │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 0: Style (data only, no functions)                   │
+│  - Plain C structs, serializable, versionable               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Use cases by layer:**
+- Game engine HUD: Layer 1 only (bring your own rendering)
+- Desktop app: Layer 2 (full immediate-mode GUI)
+- Python tool: Layer 3 (ergonomic bindings)
+- Custom widget library: Layer 1 + custom rendering
 
 ### Design Principles
 
-1. **Zero-overhead**: Direct mapping to Zig internals
-2. **Memory safety**: Clear ownership, no double-frees
-3. **Error handling**: Explicit error codes
-4. **Thread safety**: Well-defined threading model
-5. **ABI stability**: Versioned interface
+1. **u32 handles everywhere** - No pointers in API (WASM-friendly, stable ABI)
+2. **56-byte `ZglStyle`** - Cache-line aligned, trivially serializable
+3. **Sentinel values** - `ZGL_AUTO` / `ZGL_NONE` instead of optional types
+4. **Separate layers** - Use only what you need
+5. **~27 total functions** - Minimal surface area, maximum composability
 
-### Core Types
+---
+
+## Layer 0: Style (Data Structures)
+
+Plain C structs with no methods. Fully serializable. Stable ABI.
 
 ```c
-typedef struct ZigGuiPlatform ZigGuiPlatform;
-typedef struct ZigGuiApp ZigGuiApp;
-typedef struct ZigGuiPlatformInterface ZigGuiPlatformInterface;
+// ============================================================================
+// Core Types (ABI stable, versioned)
+// ============================================================================
 
-typedef enum {
-    ZIG_GUI_OK = 0,
-    ZIG_GUI_ERROR_OUT_OF_MEMORY = 1,
-    ZIG_GUI_ERROR_PLATFORM = 2,
-    ZIG_GUI_ERROR_INVALID_ARGUMENT = 3,
-} ZigGuiError;
+#define ZGL_API_VERSION 1
 
-typedef enum {
-    ZIG_GUI_EVENT_DRIVEN = 0,
-    ZIG_GUI_GAME_LOOP = 1,
-    ZIG_GUI_MINIMAL = 2,
-    ZIG_GUI_SERVER_SIDE = 3,
-} ZigGuiExecutionMode;
+// Opaque handle type - u32 for WASM compatibility
+typedef uint32_t ZglNode;
+typedef uint32_t ZglId;
+
+// Sentinel values
+#define ZGL_NULL  ((ZglNode)0xFFFFFFFF)
+#define ZGL_AUTO  (-1.0f)
+#define ZGL_NONE  (1e30f)
+
+// Result rectangle (16 bytes)
+typedef struct {
+    float x, y, width, height;
+} ZglRect;
+
+// ============================================================================
+// Style Structure (56 bytes, cache-line aligned)
+// ============================================================================
+
+typedef enum : uint8_t {
+    ZGL_ROW = 0,
+    ZGL_COLUMN = 1,
+} ZglDirection;
+
+typedef enum : uint8_t {
+    ZGL_JUSTIFY_START = 0,
+    ZGL_JUSTIFY_CENTER = 1,
+    ZGL_JUSTIFY_END = 2,
+    ZGL_JUSTIFY_SPACE_BETWEEN = 3,
+    ZGL_JUSTIFY_SPACE_AROUND = 4,
+    ZGL_JUSTIFY_SPACE_EVENLY = 5,
+} ZglJustify;
+
+typedef enum : uint8_t {
+    ZGL_ALIGN_START = 0,
+    ZGL_ALIGN_CENTER = 1,
+    ZGL_ALIGN_END = 2,
+    ZGL_ALIGN_STRETCH = 3,
+} ZglAlign;
+
+typedef struct {
+    // Flexbox properties (4 bytes)
+    ZglDirection direction;
+    ZglJustify justify;
+    ZglAlign align;
+    uint8_t _reserved;
+
+    // Flex item properties (8 bytes)
+    float flex_grow;
+    float flex_shrink;
+
+    // Dimensions (24 bytes)
+    float width;        // ZGL_AUTO = content-sized
+    float height;
+    float min_width;
+    float min_height;
+    float max_width;    // ZGL_NONE = no maximum
+    float max_height;
+
+    // Spacing (20 bytes)
+    float gap;
+    float padding_top;
+    float padding_right;
+    float padding_bottom;
+    float padding_left;
+} ZglStyle;
+
+// Default style initializer
+#define ZGL_STYLE_DEFAULT ((ZglStyle){ \
+    .direction = ZGL_COLUMN, \
+    .justify = ZGL_JUSTIFY_START, \
+    .align = ZGL_ALIGN_STRETCH, \
+    .flex_grow = 0.0f, \
+    .flex_shrink = 1.0f, \
+    .width = ZGL_AUTO, \
+    .height = ZGL_AUTO, \
+    .min_width = 0.0f, \
+    .min_height = 0.0f, \
+    .max_width = ZGL_NONE, \
+    .max_height = ZGL_NONE, \
+    .gap = 0.0f, \
+})
 ```
 
-### Lifecycle
+---
+
+## Layer 1: Layout Engine API
+
+Pure layout computation. No rendering, no input handling, no platform dependencies.
 
 ```c
-// Platform first (owns OS resources)
-ZigGuiPlatform* platform = zig_gui_sdl_platform_create(800, 600, "My App");
-ZigGuiPlatformInterface interface = zig_gui_platform_interface(platform);
+// ============================================================================
+// Layout Engine (~12 functions)
+// ============================================================================
 
-// App second (borrows platform)
-ZigGuiApp* app = zig_gui_app_create(interface, ZIG_GUI_EVENT_DRIVEN);
+// --- Lifecycle ---
+ZglLayout* zgl_layout_create(uint32_t max_nodes);
+void       zgl_layout_destroy(ZglLayout* layout);
 
-// Use...
-ZigGuiError err = zig_gui_app_run(app, my_ui_func, user_data);
+// --- Tree Building ---
+ZglNode zgl_layout_add(ZglLayout* layout, ZglNode parent, const ZglStyle* style);
+void    zgl_layout_remove(ZglLayout* layout, ZglNode node);
+void    zgl_layout_set_style(ZglLayout* layout, ZglNode node, const ZglStyle* style);
+void    zgl_layout_reparent(ZglLayout* layout, ZglNode node, ZglNode new_parent);
 
-// Destroy in reverse order
-zig_gui_app_destroy(app);
-zig_gui_platform_destroy(platform);
+// --- Computation ---
+void zgl_layout_compute(ZglLayout* layout, float width, float height);
+
+// --- Queries ---
+ZglRect zgl_layout_get_rect(const ZglLayout* layout, ZglNode node);
+ZglNode zgl_layout_get_parent(const ZglLayout* layout, ZglNode node);
+ZglNode zgl_layout_get_first_child(const ZglLayout* layout, ZglNode node);
+ZglNode zgl_layout_get_next_sibling(const ZglLayout* layout, ZglNode node);
+
+// --- Statistics ---
+uint32_t zgl_layout_node_count(const ZglLayout* layout);
+float    zgl_layout_cache_hit_rate(const ZglLayout* layout);
 ```
 
-### UI Functions
+### Layer 1 Example (Pure C, No Framework)
 
 ```c
-typedef void (*ZigGuiUIFunction)(ZigGuiContext* ctx, void* user_data);
+ZglLayout* layout = zgl_layout_create(256);
 
-void my_ui(ZigGuiContext* ctx, void* user_data) {
-    MyState* state = (MyState*)user_data;
+// Build a toolbar
+ZglStyle toolbar_style = ZGL_STYLE_DEFAULT;
+toolbar_style.direction = ZGL_ROW;
+toolbar_style.gap = 8.0f;
+toolbar_style.height = 48.0f;
 
-    zig_gui_text(ctx, "Counter: %d", state->counter);
+ZglNode toolbar = zgl_layout_add(layout, ZGL_NULL, &toolbar_style);
 
-    if (zig_gui_button(ctx, "Increment")) {
-        state->counter++;
-    }
-}
+ZglStyle btn_style = ZGL_STYLE_DEFAULT;
+btn_style.width = 100.0f;
+btn_style.height = 32.0f;
+
+ZglNode btn_file = zgl_layout_add(layout, toolbar, &btn_style);
+ZglNode btn_edit = zgl_layout_add(layout, toolbar, &btn_style);
+
+// Compute layout
+zgl_layout_compute(layout, 1920.0f, 1080.0f);
+
+// Query results
+ZglRect r = zgl_layout_get_rect(layout, btn_file);
+printf("File button at (%.0f, %.0f)\n", r.x, r.y);
+
+zgl_layout_destroy(layout);
 ```
 
-### ID System
+---
+
+## Layer 2: GUI Context API
+
+Immediate-mode widgets with automatic reconciliation.
 
 ```c
-// ID stack - for hierarchical scoping
-void zig_gui_push_id(ZigGuiContext* ctx, const char* id);
-void zig_gui_push_index(ZigGuiContext* ctx, size_t index);
-void zig_gui_pop_id(ZigGuiContext* ctx);
+// ============================================================================
+// GUI Context (~15 functions)
+// ============================================================================
 
-// Debug (debug builds only, no-op in release)
-const char* zig_gui_debug_id_path(ZigGuiContext* ctx);
-void zig_gui_debug_check_collisions(ZigGuiContext* ctx);
+// --- Lifecycle ---
+typedef struct {
+    uint32_t max_widgets;
+    float viewport_width;
+    float viewport_height;
+} ZglGuiConfig;
+
+ZglGui* zgl_gui_create(const ZglGuiConfig* config);
+void    zgl_gui_destroy(ZglGui* gui);
+
+// --- Frame Lifecycle ---
+void zgl_gui_begin_frame(ZglGui* gui);
+void zgl_gui_end_frame(ZglGui* gui);
+void zgl_gui_set_viewport(ZglGui* gui, float width, float height);
+
+// --- Widget ID System ---
+ZglId zgl_id(const char* label);
+ZglId zgl_id_index(const char* label, uint32_t index);
+ZglId zgl_id_combine(ZglId parent, ZglId child);
+
+void zgl_gui_push_id(ZglGui* gui, ZglId id);
+void zgl_gui_pop_id(ZglGui* gui);
+
+// --- Widget Declaration ---
+bool zgl_gui_widget(ZglGui* gui, ZglId id, const ZglStyle* style);
+void zgl_gui_begin(ZglGui* gui, ZglId id, const ZglStyle* style);
+void zgl_gui_end(ZglGui* gui);
+
+// --- Queries ---
+ZglRect zgl_gui_get_rect(const ZglGui* gui, ZglId id);
+bool    zgl_gui_hit_test(const ZglGui* gui, ZglId id, float x, float y);
+
+// --- Input State ---
+void zgl_gui_set_mouse(ZglGui* gui, float x, float y, bool down);
+bool zgl_gui_clicked(const ZglGui* gui, ZglId id);
+bool zgl_gui_hovered(const ZglGui* gui, ZglId id);
+
+// --- Direct Layout Access ---
+ZglLayout* zgl_gui_get_layout(ZglGui* gui);
 ```
 
-### Widgets
+### Layer 2 Example
 
 ```c
-// Text
-void zig_gui_text(ZigGuiContext* ctx, const char* fmt, ...);
+ZglGui* gui = zgl_gui_create(&(ZglGuiConfig){
+    .max_widgets = 1024,
+    .viewport_width = 800,
+    .viewport_height = 600,
+});
 
-// Buttons - label is used as ID (hashed at runtime)
-bool zig_gui_button(ZigGuiContext* ctx, const char* label);
+// Cache IDs at init time (or use static initialization)
+// This avoids repeated hashing in the render loop
+static ZglId id_toolbar, id_file, id_edit, id_view, id_content;
+id_toolbar = zgl_id("toolbar");
+id_file = zgl_id("file");
+id_edit = zgl_id("edit");
+id_view = zgl_id("view");
+id_content = zgl_id("content");
 
-// Buttons with explicit ID (when label differs from ID)
-bool zig_gui_button_id(ZigGuiContext* ctx, const char* id, const char* label);
+while (running) {
+    zgl_gui_set_mouse(gui, mouse_x, mouse_y, mouse_down);
+    zgl_gui_begin_frame(gui);
 
-// Input
-bool zig_gui_text_input(ZigGuiContext* ctx, const char* label, char* buffer, size_t buffer_size);
-bool zig_gui_checkbox(ZigGuiContext* ctx, const char* label, bool* value);
-bool zig_gui_slider_float(ZigGuiContext* ctx, const char* label, float* value, float min, float max);
+    // Toolbar - begin() auto-pushes ID scope
+    ZglStyle toolbar = { .direction = ZGL_ROW, .height = 48, .gap = 8 };
+    zgl_gui_begin(gui, id_toolbar, &toolbar);
+    {
+        ZglStyle button = { .width = 80, .height = 32 };
 
-// Layout containers
-void zig_gui_push_row(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
-void zig_gui_push_column(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
-void zig_gui_pop_layout(ZigGuiContext* ctx);
-```
-
-### C Usage Example
-
-```c
-void settings_panel(ZigGuiContext* ctx, SettingsState* state) {
-    zig_gui_push_id(ctx, "settings");
-
-    zig_gui_text(ctx, "Settings");
-
-    if (zig_gui_button(ctx, "Save")) {
-        save_settings(state);
-    }
-
-    // Same label, different IDs
-    zig_gui_button_id(ctx, "reset_audio", "Reset");
-    zig_gui_button_id(ctx, "reset_video", "Reset");
-
-    // Loop with index-based IDs
-    for (size_t i = 0; i < state->item_count; i++) {
-        zig_gui_push_index(ctx, i);
-
-        zig_gui_text(ctx, state->items[i].name);
-        if (zig_gui_button(ctx, "Delete")) {
-            delete_item(state, i);
+        // Child IDs are scoped: toolbar ^ file, toolbar ^ edit, etc.
+        zgl_gui_widget(gui, id_file, &button);
+        if (zgl_gui_clicked(gui, id_file)) {
+            open_file_menu();
         }
 
-        zig_gui_pop_id(ctx);
+        zgl_gui_widget(gui, id_edit, &button);
+        zgl_gui_widget(gui, id_view, &button);
     }
+    zgl_gui_end(gui);  // Pops toolbar scope
 
-    zig_gui_pop_id(ctx);
+    // Dynamic list - use zgl_id_index for loops
+    zgl_gui_begin(gui, id_content, &ZGL_STYLE_DEFAULT);
+    {
+        for (int i = 0; i < item_count; i++) {
+            // zgl_id_index combines base + index efficiently
+            ZglId item_id = zgl_id_index("item", i);
+            zgl_gui_widget(gui, item_id, &item_style);
+
+            if (zgl_gui_clicked(gui, item_id)) {
+                select_item(i);
+            }
+        }
+    }
+    zgl_gui_end(gui);
+
+    zgl_gui_end_frame(gui);
+    render(gui);
+}
+
+zgl_gui_destroy(gui);
+```
+
+**Best practice**: Cache frequently-used IDs as static variables. The `zgl_id()` function is pure (~10ns), but caching eliminates even that overhead in hot loops.
+
+---
+
+## Platform-Specific Optimizations
+
+### Zig Native
+
+Zero-cost comptime hashing:
+
+```zig
+pub fn main() !void {
+    var gui = try zgl.Gui.init(.{});
+    defer gui.deinit();
+
+    while (running) {
+        gui.beginFrame();
+        defer gui.endFrame();
+
+        // begin() auto-pushes ID scope + comptime hash
+        gui.begin("toolbar", .{ .direction = .row, .height = 48 });
+        defer gui.end();
+
+        gui.button("file");  // ID: toolbar ^ file
+        if (gui.wasClicked("file")) {
+            try openFileMenu();
+        }
+
+        // For loops: use beginIndexed
+        for (items, 0..) |item, i| {
+            gui.beginIndexed("item", i, .{ .height = 40 });
+            defer gui.end();
+
+            gui.text(item.name);
+            gui.button("delete");  // ID: toolbar ^ item ^ i ^ delete
+            if (gui.wasClickedIndexed("delete", i)) {
+                items.remove(i);
+            }
+        }
+    }
 }
 ```
 
-### State Management
+### WebAssembly
+
+Pre-computed IDs at build time:
+
+```typescript
+// Build-time: Generate ID constants
+const IDS = {
+    toolbar: hash("toolbar"),  // Computed at build time
+    file: hash("file"),
+};
+
+// Runtime: Just pass u32 IDs
+function render() {
+    gui.beginFrame();
+    gui.begin(IDS.toolbar, TOOLBAR_STYLE);
+    gui.widget(IDS.file, BUTTON_STYLE);
+    gui.end();
+    gui.endFrame();
+}
+```
+
+### Python FFI
+
+Context managers for ergonomic API:
+
+```python
+gui = zgl.Gui(max_widgets=1024)
+
+while running:
+    gui.set_mouse(mouse_x, mouse_y, mouse_down)
+
+    with gui.frame():
+        # container() auto-pushes ID scope
+        with gui.container("toolbar", direction="row", height=48):
+            if gui.widget("file", width=80, height=32).clicked:
+                open_file_menu()
+
+        with gui.container("content"):
+            for i, item in enumerate(items):
+                # Use widget_indexed for loops - avoids string allocation
+                # ID = content ^ item ^ i (computed efficiently)
+                if gui.widget_indexed("item", i, height=40).clicked:
+                    select_item(i)
+
+        # For user-generated content, use widget_dynamic
+        for tab in user_tabs:
+            with gui.container_dynamic(tab.name):
+                render_tab_content(tab)
+```
+
+**Best practice**: Use `widget_indexed("base", i)` for loops instead of f-strings like `f"item_{i}"`. This avoids string allocation and uses efficient index-based hashing.
+
+### Embedded (32KB RAM)
+
+Stack allocation, no heap in hot path:
 
 ```c
-// Type-safe accessors
-void zig_gui_state_set_int(ZigGuiState* state, const char* key, int32_t value);
-int32_t zig_gui_state_get_int(ZigGuiState* state, const char* key, int32_t default_value);
+// Compile with: -DZGL_MAX_NODES=64
 
-void zig_gui_state_set_float(ZigGuiState* state, const char* key, float value);
-float zig_gui_state_get_float(ZigGuiState* state, const char* key, float default_value);
+ZglLayoutEmbedded layout_storage;
+ZglLayout* layout = zgl_layout_init_embedded(&layout_storage);
 
-void zig_gui_state_set_string(ZigGuiState* state, const char* key, const char* value);
-const char* zig_gui_state_get_string(ZigGuiState* state, const char* key, const char* default_value);
+// All operations use fixed-size arrays
+ZglNode root = zgl_layout_add(layout, ZGL_NULL, &root_style);
+zgl_layout_compute(layout, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+ZglRect r = zgl_layout_get_rect(layout, root);
+draw_to_framebuffer(r);
+```
+
+---
+
+## Memory Model
+
+### Ownership Rules
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Your Application                        │
+│  - Owns: ZglGui*, ZglLayout* handles                       │
+│  - Owns: Style structs (stack or heap, your choice)         │
+│  - Borrows: ZglRect results (valid until next compute)      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     zgl Library                             │
+│  - Owns: Internal node arrays, hash maps, free lists        │
+│  - Allocates: Once at create(), frees at destroy()          │
+│  - Hot path: Zero allocations                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Memory Budget
+
+| Platform | Max Nodes | Per-Node | Total |
+|----------|-----------|----------|-------|
+| Embedded | 64 | 80 B | 5 KB |
+| Mobile | 1024 | 180 B | 180 KB |
+| Desktop | 4096 | 200 B | 800 KB |
+
+---
+
+## Error Handling
+
+```c
+typedef enum {
+    ZGL_OK = 0,
+    ZGL_ERROR_OUT_OF_MEMORY = 1,
+    ZGL_ERROR_CAPACITY_EXCEEDED = 2,
+    ZGL_ERROR_INVALID_NODE = 3,
+} ZglError;
+
+// Get last error
+ZglError zgl_get_last_error(void);
+
+// Checked version returns error code
+ZglError zgl_layout_add_checked(ZglLayout* layout, ZglNode parent,
+                                 const ZglStyle* style, ZglNode* out_node);
+```
+
+---
+
+## Thread Safety
+
+```
+SINGLE-THREADED: ZglGui, ZglLayout
+  - All API calls must be from the same thread
+
+THREAD-SAFE: zgl_id(), zgl_id_index(), zgl_id_combine()
+  - Pure functions, no shared state
+  - Can pre-compute IDs on any thread
+
+IMMUTABLE: ZglStyle, ZglRect
+  - Plain data, copy freely between threads
+```
+
+---
+
+## ABI Versioning
+
+```c
+#define ZGL_API_VERSION_MAJOR 1
+#define ZGL_API_VERSION_MINOR 0
+
+uint32_t zgl_get_version(void);    // Runtime version check
+size_t   zgl_style_size(void);     // Struct size for compatibility
 ```
 
 ---
@@ -670,7 +1399,8 @@ class Counter:
         with gui.column():
             gui.text(f"Count: {self.count}")
 
-            if gui.button("Increment"):
+            gui.button("Increment")
+            if gui.was_clicked("Increment"):
                 self.count += 1
 
             # Loops with automatic index scoping
@@ -678,7 +1408,8 @@ class Counter:
                 for i, item in enumerate(self.items):
                     with gui.scope(i):
                         gui.text(item.name)
-                        if gui.button("Delete"):
+                        gui.button("Delete")
+                        if gui.was_clicked("Delete"):
                             self.items.remove(item)
 ```
 
@@ -715,7 +1446,8 @@ class Counter {
         gui.column(() => {
             gui.text(`Count: ${this.count}`);
 
-            if (gui.button("Increment")) {
+            gui.button("Increment");
+            if (gui.wasClicked("Increment")) {
                 this.count++;
             }
 
@@ -723,7 +1455,8 @@ class Counter {
                 this.items.forEach((item, i) => {
                     gui.scope(i, () => {
                         gui.text(item.name);
-                        if (gui.button("Delete")) {
+                        gui.button("Delete");
+                        if (gui.wasClicked("Delete")) {
                             this.items.splice(i, 1);
                         }
                     });

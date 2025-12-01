@@ -7,8 +7,19 @@
 //! - Real flexbox algorithm
 //!
 //! This is the COMPLETE layout engine that will enable honest benchmarks.
+//!
+//! ## Embedded Configuration
+//!
+//! For embedded systems with limited RAM, configure at build time:
+//!   zig build -Dmax_layout_elements=64
+//!
+//! Memory usage scales with max_layout_elements:
+//!   - 64 elements:  ~9KB (fits in 32KB embedded)
+//!   - 256 elements: ~36KB
+//!   - 4096 elements (default): ~580KB
 
 const std = @import("std");
+const build_options = @import("build_options");
 const flexbox = @import("flexbox.zig");
 const cache = @import("cache.zig");
 const dirty_tracking = @import("dirty_tracking.zig");
@@ -23,7 +34,8 @@ const CacheStats = cache.CacheStats;
 const DirtyQueue = dirty_tracking.DirtyQueue;
 
 /// Maximum number of elements in the layout tree
-pub const MAX_ELEMENTS = 4096;
+/// Configurable via build option: -Dmax_layout_elements=N
+pub const MAX_ELEMENTS: u32 = build_options.max_layout_elements;
 
 /// Element in the layout tree (Structure-of-Arrays layout for cache efficiency)
 pub const LayoutEngine = struct {
@@ -54,6 +66,9 @@ pub const LayoutEngine = struct {
     // Statistics
     cache_stats: CacheStats,
 
+    // Free list for element reuse (removed elements can be recycled)
+    free_list: std.BoundedArray(u32, MAX_ELEMENTS),
+
     pub fn init(allocator: std.mem.Allocator) !LayoutEngine {
         const arena = std.heap.ArenaAllocator.init(allocator);
 
@@ -72,6 +87,7 @@ pub const LayoutEngine = struct {
             .element_count = 0,
             .global_style_version = 1,
             .cache_stats = .{},
+            .free_list = .{},
         };
     }
 
@@ -91,12 +107,12 @@ pub const LayoutEngine = struct {
         parent_index: ?u32,
         style: FlexStyle,
     ) !u32 {
-        if (self.element_count >= MAX_ELEMENTS) {
-            return error.TooManyElements;
-        }
+        const index = try self.allocateIndex();
 
-        const index = self.element_count;
-        self.element_count += 1;
+        // Initialize tree structure (may be reused from free list)
+        self.first_child[index] = 0xFFFFFFFF;
+        self.next_sibling[index] = 0xFFFFFFFF;
+        self.child_count[index] = 0;
 
         // Set style
         self.flex_styles[index] = style;
@@ -151,6 +167,131 @@ pub const LayoutEngine = struct {
         self.style_versions[index] = self.global_style_version;
         self.global_style_version += 1;
         self.markDirty(index);
+    }
+
+    // =========================================================================
+    // Reconciliation Support (for immediate-mode API)
+    // =========================================================================
+
+    /// Remove element from tree (for widgets that disappeared)
+    /// Recursively removes all children and adds indices to free list for reuse
+    pub fn removeElement(self: *LayoutEngine, index: u32) void {
+        // First, recursively remove all children
+        var child = self.first_child[index];
+        while (child != 0xFFFFFFFF) {
+            const next = self.next_sibling[child];
+            self.removeElement(child);
+            child = next;
+        }
+
+        // Unlink from parent's child list
+        const parent = self.parent[index];
+        if (parent != 0xFFFFFFFF) {
+            self.unlinkChild(parent, index);
+            self.markDirty(parent);
+        }
+
+        // Clear element data
+        self.parent[index] = 0xFFFFFFFF;
+        self.first_child[index] = 0xFFFFFFFF;
+        self.next_sibling[index] = 0xFFFFFFFF;
+        self.child_count[index] = 0;
+        self.flex_styles[index] = .{};
+        self.computed_rects[index] = Rect.zero();
+        self.layout_cache[index].invalidate();
+
+        // Add to free list for reuse
+        self.free_list.append(index) catch {
+            // Free list full - index will be "leaked" but this is rare
+        };
+    }
+
+    /// Move element to new parent (for re-parenting when widget moves in tree)
+    pub fn reparent(self: *LayoutEngine, index: u32, new_parent: u32) void {
+        const old_parent = self.parent[index];
+        if (old_parent == new_parent) return;
+
+        // Unlink from old parent
+        if (old_parent != 0xFFFFFFFF) {
+            self.unlinkChild(old_parent, index);
+            self.markDirty(old_parent);
+        }
+
+        // Link to new parent
+        self.linkChild(new_parent, index);
+        self.parent[index] = new_parent;
+
+        // Mark new parent dirty
+        self.markDirty(new_parent);
+        self.markDirty(index);
+    }
+
+    /// Reorder siblings (for when widget order changes)
+    pub fn reorderSiblings(self: *LayoutEngine, parent: u32, new_order: []const u32) void {
+        if (new_order.len == 0) return;
+
+        // Rebuild sibling linked list in new order
+        self.first_child[parent] = new_order[0];
+
+        for (new_order[0 .. new_order.len - 1], new_order[1..]) |current, next| {
+            self.next_sibling[current] = next;
+        }
+        self.next_sibling[new_order[new_order.len - 1]] = 0xFFFFFFFF;
+
+        self.markDirty(parent);
+    }
+
+    /// Unlink a child from its parent's child list
+    fn unlinkChild(self: *LayoutEngine, parent: u32, child: u32) void {
+        if (self.first_child[parent] == child) {
+            // Child is first - update first_child pointer
+            self.first_child[parent] = self.next_sibling[child];
+        } else {
+            // Find previous sibling
+            var prev = self.first_child[parent];
+            while (prev != 0xFFFFFFFF and self.next_sibling[prev] != child) {
+                prev = self.next_sibling[prev];
+            }
+            if (prev != 0xFFFFFFFF) {
+                self.next_sibling[prev] = self.next_sibling[child];
+            }
+        }
+
+        self.next_sibling[child] = 0xFFFFFFFF;
+        self.child_count[parent] -|= 1; // Saturating subtract
+    }
+
+    /// Link a child to a parent (as last child)
+    fn linkChild(self: *LayoutEngine, parent: u32, child: u32) void {
+        if (self.first_child[parent] == 0xFFFFFFFF) {
+            // First child
+            self.first_child[parent] = child;
+        } else {
+            // Find last sibling
+            var sibling = self.first_child[parent];
+            while (self.next_sibling[sibling] != 0xFFFFFFFF) {
+                sibling = self.next_sibling[sibling];
+            }
+            self.next_sibling[sibling] = child;
+        }
+        self.child_count[parent] += 1;
+    }
+
+    /// Allocate a new element index (reuses from free list if available)
+    fn allocateIndex(self: *LayoutEngine) !u32 {
+        // Try to reuse from free list first
+        if (self.free_list.len > 0) {
+            return self.free_list.pop();
+        }
+
+        // Allocate new index
+        if (self.element_count >= MAX_ELEMENTS) {
+            return error.TooManyElements;
+        }
+
+        const index = self.element_count;
+        self.element_count += 1;
+        return index;
     }
 
     /// Compute layout for all dirty elements
@@ -269,10 +410,15 @@ pub const LayoutEngine = struct {
 
         // Compute flexbox layout (this uses our validated algorithm + SIMD)
         const container_style = self.flex_styles[index];
+
+        // Use container's specified dimensions if set, otherwise available space
+        const container_width = if (container_style.width >= 0) container_style.width else available_width;
+        const container_height = if (container_style.height >= 0) container_style.height else available_height;
+
         try flexbox.computeFlexLayout(
             self.arena.allocator(),
-            available_width,
-            available_height,
+            container_width,
+            container_height,
             container_style,
             children_styles,
             children_results,
@@ -454,4 +600,130 @@ test "LayoutEngine: dirty tracking only processes changed elements" {
     // Should mark child and parent dirty
     try std.testing.expect(engine.getDirtyCount() > 0);
     try std.testing.expect(engine.getDirtyCount() < 4); // Not all elements
+}
+
+test "LayoutEngine: removeElement removes from tree" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create tree
+    const root = try engine.addElement(null, .{ .direction = .column });
+    const child1 = try engine.addElement(root, .{ .height = 50 });
+    const child2 = try engine.addElement(root, .{ .height = 30 });
+
+    try std.testing.expectEqual(@as(u16, 2), engine.child_count[root]);
+
+    // Remove child1
+    engine.removeElement(child1);
+
+    // Verify child1 is removed
+    try std.testing.expectEqual(@as(u16, 1), engine.child_count[root]);
+    try std.testing.expectEqual(child2, engine.first_child[root]);
+
+    // Verify child1 index is in free list
+    try std.testing.expectEqual(@as(usize, 1), engine.free_list.len);
+}
+
+test "LayoutEngine: removeElement with children removes recursively" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create nested tree: root -> container -> child
+    const root = try engine.addElement(null, .{ .direction = .column });
+    const container = try engine.addElement(root, .{ .direction = .row });
+    _ = try engine.addElement(container, .{ .height = 50 });
+    _ = try engine.addElement(container, .{ .height = 30 });
+
+    try std.testing.expectEqual(@as(u16, 1), engine.child_count[root]);
+    try std.testing.expectEqual(@as(u16, 2), engine.child_count[container]);
+
+    // Remove container (should remove its children too)
+    engine.removeElement(container);
+
+    // Verify container and its children are removed
+    try std.testing.expectEqual(@as(u16, 0), engine.child_count[root]);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), engine.first_child[root]);
+
+    // All three (container + 2 children) should be in free list
+    try std.testing.expectEqual(@as(usize, 3), engine.free_list.len);
+}
+
+test "LayoutEngine: reparent moves element to new parent" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create tree with two containers
+    const root = try engine.addElement(null, .{ .direction = .column });
+    const container1 = try engine.addElement(root, .{ .direction = .row });
+    const container2 = try engine.addElement(root, .{ .direction = .row });
+    const child = try engine.addElement(container1, .{ .height = 50 });
+
+    try std.testing.expectEqual(@as(u16, 1), engine.child_count[container1]);
+    try std.testing.expectEqual(@as(u16, 0), engine.child_count[container2]);
+
+    // Reparent child from container1 to container2
+    engine.reparent(child, container2);
+
+    // Verify child moved
+    try std.testing.expectEqual(@as(u16, 0), engine.child_count[container1]);
+    try std.testing.expectEqual(@as(u16, 1), engine.child_count[container2]);
+    try std.testing.expectEqual(child, engine.first_child[container2]);
+    try std.testing.expectEqual(container2, engine.parent[child]);
+}
+
+test "LayoutEngine: reorderSiblings changes order" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create tree with three children
+    const root = try engine.addElement(null, .{ .direction = .column });
+    const child1 = try engine.addElement(root, .{ .height = 50 });
+    const child2 = try engine.addElement(root, .{ .height = 30 });
+    const child3 = try engine.addElement(root, .{ .height = 40 });
+
+    // Verify initial order: child1 -> child2 -> child3
+    try std.testing.expectEqual(child1, engine.first_child[root]);
+    try std.testing.expectEqual(child2, engine.next_sibling[child1]);
+    try std.testing.expectEqual(child3, engine.next_sibling[child2]);
+
+    // Reorder to: child3 -> child1 -> child2
+    const new_order = [_]u32{ child3, child1, child2 };
+    engine.reorderSiblings(root, &new_order);
+
+    // Verify new order
+    try std.testing.expectEqual(child3, engine.first_child[root]);
+    try std.testing.expectEqual(child1, engine.next_sibling[child3]);
+    try std.testing.expectEqual(child2, engine.next_sibling[child1]);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), engine.next_sibling[child2]);
+}
+
+test "LayoutEngine: free list reuse" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create and remove elements
+    const root = try engine.addElement(null, .{ .direction = .column });
+    const child1 = try engine.addElement(root, .{ .height = 50 });
+
+    engine.removeElement(child1);
+
+    // Free list should have child1's index
+    try std.testing.expectEqual(@as(usize, 1), engine.free_list.len);
+
+    // Add new element - should reuse the freed index
+    const child2 = try engine.addElement(root, .{ .height = 60 });
+
+    // Should have reused child1's index
+    try std.testing.expectEqual(child1, child2);
+    try std.testing.expectEqual(@as(usize, 0), engine.free_list.len);
 }

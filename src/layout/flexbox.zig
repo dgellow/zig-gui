@@ -19,6 +19,8 @@ pub const JustifyContent = enum(u8) {
     center = 1,
     flex_end = 2,
     space_between = 3,
+    space_around = 4,
+    space_evenly = 5,
 };
 
 /// Cross axis alignment
@@ -29,32 +31,38 @@ pub const AlignItems = enum(u8) {
     stretch = 3,
 };
 
-/// Flexbox style properties (32 bytes - fits in cache line)
+/// Flexbox style properties (56 bytes - cache-line friendly)
 pub const FlexStyle = struct {
+    // Layout direction and alignment (3 bytes)
     direction: FlexDirection = .column,
     justify_content: JustifyContent = .flex_start,
     align_items: AlignItems = .flex_start,
 
+    // Flex item properties (8 bytes)
     flex_grow: f32 = 0.0,
     flex_shrink: f32 = 1.0,
 
-    width: f32 = -1.0,  // -1 = auto
+    // Dimensions (24 bytes)
+    width: f32 = -1.0, // -1 = auto
     height: f32 = -1.0,
     min_width: f32 = 0.0,
     min_height: f32 = 0.0,
     max_width: f32 = std.math.inf(f32),
     max_height: f32 = std.math.inf(f32),
 
+    // Spacing (20 bytes)
     gap: f32 = 0.0,
-
-    _padding: [16]u8 = undefined,  // Pad to 56 bytes for cache efficiency
+    padding_top: f32 = 0.0,
+    padding_right: f32 = 0.0,
+    padding_bottom: f32 = 0.0,
+    padding_left: f32 = 0.0,
 
     comptime {
         const size = @sizeOf(FlexStyle);
         if (size != 56) {
             @compileError(std.fmt.comptimePrint(
                 "FlexStyle size is {} bytes, expected 56 for cache efficiency",
-                .{size}
+                .{size},
             ));
         }
     }
@@ -112,8 +120,18 @@ pub fn computeFlexLayout(
     if (child_count == 0) return;
 
     const is_row = container_style.direction == .row;
-    const main_size = if (is_row) container_width else container_height;
-    const cross_size = if (is_row) container_height else container_width;
+
+    // Calculate content area (container minus padding)
+    const padding_main_start = if (is_row) container_style.padding_left else container_style.padding_top;
+    const padding_main_end = if (is_row) container_style.padding_right else container_style.padding_bottom;
+    const padding_cross_start = if (is_row) container_style.padding_top else container_style.padding_left;
+    const padding_cross_end = if (is_row) container_style.padding_bottom else container_style.padding_right;
+
+    const content_main = (if (is_row) container_width else container_height) - padding_main_start - padding_main_end;
+    const content_cross = (if (is_row) container_height else container_width) - padding_cross_start - padding_cross_end;
+
+    const main_size = content_main;
+    const cross_size = content_cross;
 
     // Allocate temporary measurements (arena allocator, zero-cost)
     var measurements = try allocator.alloc(ChildMeasurement, child_count);
@@ -237,40 +255,55 @@ pub fn computeFlexLayout(
     }
 
     // Step 4: Position children along main axis
-    var main_offset: f32 = 0;
+    // Calculate total children size first (needed for most justify modes)
+    var total_children_size: f32 = 0;
+    for (measurements) |m| {
+        total_children_size += m.main_size;
+    }
+
+    // Determine initial offset and spacing based on justify_content
+    var main_offset: f32 = padding_main_start;
+    var spacing: f32 = container_style.gap;
 
     switch (container_style.justify_content) {
         .flex_start => {
-            main_offset = 0;
+            // Start at padding, use gap for spacing
+            spacing = container_style.gap;
         },
         .center => {
-            var total_children_size: f32 = total_gap;
-            for (measurements) |m| {
-                total_children_size += m.main_size;
-            }
-            main_offset = (main_size - total_children_size) / 2.0;
+            const total_with_gap = total_children_size + total_gap;
+            main_offset = padding_main_start + (main_size - total_with_gap) / 2.0;
+            spacing = container_style.gap;
         },
         .flex_end => {
-            var total_children_size: f32 = total_gap;
-            for (measurements) |m| {
-                total_children_size += m.main_size;
-            }
-            main_offset = main_size - total_children_size;
+            const total_with_gap = total_children_size + total_gap;
+            main_offset = padding_main_start + main_size - total_with_gap;
+            spacing = container_style.gap;
         },
         .space_between => {
-            main_offset = 0;
-            // Will calculate spacing per-child
+            if (child_count > 1) {
+                spacing = (main_size - total_children_size) / @as(f32, @floatFromInt(child_count - 1));
+            } else {
+                spacing = 0;
+            }
+        },
+        .space_around => {
+            // Equal space around each item (half space at edges)
+            const total_space = main_size - total_children_size;
+            spacing = total_space / @as(f32, @floatFromInt(child_count));
+            main_offset = padding_main_start + spacing / 2.0;
+        },
+        .space_evenly => {
+            // Equal space between all items and edges
+            const total_space = main_size - total_children_size;
+            spacing = total_space / @as(f32, @floatFromInt(child_count + 1));
+            main_offset = padding_main_start + spacing;
         },
     }
 
-    const spacing = if (container_style.justify_content == .space_between and child_count > 1)
-        (main_size - total_base_size) / @as(f32, @floatFromInt(child_count - 1))
-    else
-        container_style.gap;
-
     for (measurements, 0..) |m, i| {
-        // Calculate cross axis position
-        const cross_offset = switch (container_style.align_items) {
+        // Calculate cross axis position (with padding offset)
+        const cross_offset = padding_cross_start + switch (container_style.align_items) {
             .flex_start => @as(f32, 0),
             .center => (cross_size - m.cross_size) / 2.0,
             .flex_end => cross_size - m.cross_size,

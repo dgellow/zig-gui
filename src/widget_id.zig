@@ -124,8 +124,9 @@ pub const IdStack = struct {
         self.pushHash(id.hash);
     }
 
-    /// Internal: push a raw hash value.
-    fn pushHash(self: *Self, hash: u32) void {
+    /// Push a raw hash value onto the stack.
+    /// Used by GUI.beginCore for auto-scoping.
+    pub fn pushHash(self: *Self, hash: u32) void {
         if (self.depth >= MAX_DEPTH) {
             // Stack overflow - in release, silently ignore
             // In debug, this would be a good place for a warning
@@ -159,14 +160,19 @@ pub const IdStack = struct {
 
     /// Combine the current stack hash with a widget ID.
     /// Returns the final ID to use for the widget.
-    pub fn combine(self: *const Self, widget_id: WidgetId) WidgetId {
-        return .{ .hash = self.current_hash ^ widget_id.hash };
+    pub fn combine(self: *const Self, widget_id: anytype) u32 {
+        const hash = switch (@TypeOf(widget_id)) {
+            WidgetId => widget_id.hash,
+            u32 => widget_id,
+            else => @compileError("combine expects WidgetId or u32"),
+        };
+        return self.current_hash ^ hash;
     }
 
     /// Combine with a comptime label directly.
-    pub fn combineLabel(self: *const Self, comptime label: []const u8) WidgetId {
+    pub fn combineLabel(self: *const Self, comptime label: []const u8) u32 {
         const widget_hash = comptime @as(u32, @truncate(std.hash.Wyhash.hash(0, label)));
-        return .{ .hash = self.current_hash ^ widget_hash };
+        return self.current_hash ^ widget_hash;
     }
 
     /// Get current depth.
@@ -310,7 +316,7 @@ test "IdStack combine produces unique widget IDs" {
     stack.pop();
 
     // Same widget label, different context = different ID
-    try std.testing.expect(!button_in_root.eql(button_in_panel));
+    try std.testing.expect(button_in_root != button_in_panel);
 }
 
 test "IdStack combineLabel" {
@@ -322,7 +328,7 @@ test "IdStack combineLabel" {
     const id2 = stack.combineLabel("button");
 
     // Both methods should produce the same ID
-    try std.testing.expectEqual(id1.hash, id2.hash);
+    try std.testing.expectEqual(id1, id2);
 }
 
 test "IdStack clear resets state" {
@@ -414,7 +420,7 @@ test "IdStack real-world usage pattern" {
 
     // Loop of items
     stack.push("item_list");
-    var item_ids: [3]WidgetId = undefined;
+    var item_ids: [3]u32 = undefined;
     for (0..3) |i| {
         stack.pushIndex(i);
         item_ids[i] = stack.combineLabel("delete");
@@ -425,8 +431,8 @@ test "IdStack real-world usage pattern" {
     stack.pop(); // settings_panel
 
     // Verify all IDs are unique
-    try std.testing.expect(!save_id.eql(cancel_id));
-    try std.testing.expect(!item_ids[0].eql(item_ids[1]));
-    try std.testing.expect(!item_ids[1].eql(item_ids[2]));
-    try std.testing.expect(!item_ids[0].eql(save_id));
+    try std.testing.expect(save_id != cancel_id);
+    try std.testing.expect(item_ids[0] != item_ids[1]);
+    try std.testing.expect(item_ids[1] != item_ids[2]);
+    try std.testing.expect(item_ids[0] != save_id);
 }
