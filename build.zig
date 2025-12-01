@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     });
     zig_gui_mod.addOptions("build_options", build_options);
 
-    // Create static library
+    // Create static library (Zig API)
     const lib = b.addStaticLibrary(.{
         .name = "gui",
         .root_source_file = b.path("src/root.zig"),
@@ -27,6 +27,20 @@ pub fn build(b: *std.Build) void {
     });
     lib.root_module.addOptions("build_options", build_options);
     b.installArtifact(lib);
+
+    // Create C API static library
+    const c_lib = b.addStaticLibrary(.{
+        .name = "zgl",
+        .root_source_file = b.path("src/c_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_lib.root_module.addOptions("build_options", build_options);
+    c_lib.linkLibC();
+    b.installArtifact(c_lib);
+
+    // Install C header
+    b.installFile("include/zgl.h", "include/zgl.h");
 
     // ===== Examples =====
 
@@ -136,10 +150,43 @@ pub fn build(b: *std.Build) void {
 
     const run_cpu_tests = b.addRunArtifact(cpu_tests);
 
+    // C API tests
+    const c_api_tests = b.addTest(.{
+        .root_source_file = b.path("src/c_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_api_tests.root_module.addOptions("build_options", build_options);
+    c_api_tests.linkLibC();
+
+    const run_c_api_tests = b.addRunArtifact(c_api_tests);
+
+    // C test executable (tests from actual C code)
+    const c_test_exe = b.addExecutable(.{
+        .name = "c_api_test",
+        .target = target,
+        .optimize = optimize,
+    });
+    c_test_exe.addCSourceFile(.{
+        .file = b.path("tests/c_api_test.c"),
+        .flags = &.{ "-std=c99", "-Wall", "-Wextra" },
+    });
+    c_test_exe.addIncludePath(b.path("include"));
+    c_test_exe.linkLibrary(c_lib);
+    c_test_exe.linkLibC();
+    b.installArtifact(c_test_exe);
+
+    const run_c_test = b.addRunArtifact(c_test_exe);
+    run_c_test.step.dependOn(b.getInstallStep());
+
+    const c_test_step = b.step("c-test", "Run C API tests");
+    c_test_step.dependOn(&run_c_test.step);
+
     // Test step that runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_gui_tests.step);
     test_step.dependOn(&run_cpu_tests.step);
+    test_step.dependOn(&run_c_api_tests.step);
 
     // ===== Profiling Tools =====
 

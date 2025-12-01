@@ -398,10 +398,15 @@ pub const LayoutEngine = struct {
 
         // Compute flexbox layout (this uses our validated algorithm + SIMD)
         const container_style = self.flex_styles[index];
+
+        // Use container's specified dimensions if set, otherwise available space
+        const container_width = if (container_style.width >= 0) container_style.width else available_width;
+        const container_height = if (container_style.height >= 0) container_style.height else available_height;
+
         try flexbox.computeFlexLayout(
             self.arena.allocator(),
-            available_width,
-            available_height,
+            container_width,
+            container_height,
             container_style,
             children_styles,
             children_results,

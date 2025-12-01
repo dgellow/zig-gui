@@ -65,32 +65,26 @@ typedef struct {
 } ZglRect;
 
 /* ============================================================================
- * Layer 0: Style Enums
+ * Layer 0: Style Constants
  * ============================================================================ */
 
 /** Flex direction: how children are laid out */
-typedef enum {
-    ZGL_ROW = 0,      /**< Children laid out horizontally */
-    ZGL_COLUMN = 1,   /**< Children laid out vertically */
-} ZglDirection;
+#define ZGL_ROW      0  /**< Children laid out horizontally */
+#define ZGL_COLUMN   1  /**< Children laid out vertically */
 
 /** Main-axis alignment (justify-content in CSS) */
-typedef enum {
-    ZGL_JUSTIFY_START = 0,         /**< Pack items at start */
-    ZGL_JUSTIFY_CENTER = 1,        /**< Center items */
-    ZGL_JUSTIFY_END = 2,           /**< Pack items at end */
-    ZGL_JUSTIFY_SPACE_BETWEEN = 3, /**< Distribute with space between */
-    ZGL_JUSTIFY_SPACE_AROUND = 4,  /**< Distribute with space around */
-    ZGL_JUSTIFY_SPACE_EVENLY = 5,  /**< Distribute with equal space */
-} ZglJustify;
+#define ZGL_JUSTIFY_START         0  /**< Pack items at start */
+#define ZGL_JUSTIFY_CENTER        1  /**< Center items */
+#define ZGL_JUSTIFY_END           2  /**< Pack items at end */
+#define ZGL_JUSTIFY_SPACE_BETWEEN 3  /**< Distribute with space between */
+#define ZGL_JUSTIFY_SPACE_AROUND  4  /**< Distribute with space around */
+#define ZGL_JUSTIFY_SPACE_EVENLY  5  /**< Distribute with equal space */
 
 /** Cross-axis alignment (align-items in CSS) */
-typedef enum {
-    ZGL_ALIGN_START = 0,   /**< Align to start of cross axis */
-    ZGL_ALIGN_CENTER = 1,  /**< Center on cross axis */
-    ZGL_ALIGN_END = 2,     /**< Align to end of cross axis */
-    ZGL_ALIGN_STRETCH = 3, /**< Stretch to fill cross axis */
-} ZglAlign;
+#define ZGL_ALIGN_START   0  /**< Align to start of cross axis */
+#define ZGL_ALIGN_CENTER  1  /**< Center on cross axis */
+#define ZGL_ALIGN_END     2  /**< Align to end of cross axis */
+#define ZGL_ALIGN_STRETCH 3  /**< Stretch to fill cross axis */
 
 /* ============================================================================
  * Layer 0: Style Structure
@@ -105,12 +99,15 @@ typedef enum {
 /**
  * Style structure (56 bytes, cache-line aligned).
  * Plain C struct with no methods. Fully serializable.
+ *
+ * Note: direction/justify/align use uint8_t for ABI stability (C enums vary in size).
+ * Use ZGL_ROW, ZGL_COLUMN, etc. constants for values.
  */
 typedef struct {
     /* === Flexbox properties (4 bytes) === */
-    ZglDirection direction;  /**< Row or column layout */
-    ZglJustify justify;      /**< Main-axis alignment */
-    ZglAlign align;          /**< Cross-axis alignment */
+    uint8_t direction;       /**< Row (0) or column (1) layout */
+    uint8_t justify;         /**< Main-axis alignment (ZGL_JUSTIFY_*) */
+    uint8_t align;           /**< Cross-axis alignment (ZGL_ALIGN_*) */
     uint8_t _reserved;       /**< Padding for alignment */
 
     /* === Flex item properties (8 bytes) === */
