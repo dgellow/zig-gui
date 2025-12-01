@@ -6,12 +6,36 @@ const Rect = @import("core/geometry.zig").Rect;
 const Point = @import("core/geometry.zig").Point;
 const Paint = @import("core/paint.zig").Paint;
 const LayoutEngine = @import("layout.zig").LayoutEngine;
+const FlexStyle = @import("layout.zig").FlexStyle;
 const StyleSystem = @import("style.zig").StyleSystem;
 const EventManager = @import("events.zig").EventManager;
 const AnimationSystem = @import("animation.zig").AnimationSystem;
 const AssetManager = @import("asset.zig").AssetManager;
+const WidgetId = @import("widget_id.zig").WidgetId;
+const IdStack = @import("widget_id.zig").IdStack;
 // const View = @import("components/view.zig").View; // Removed - moving to immediate-mode API
 const profiler = @import("profiler.zig");
+
+/// Maximum number of widgets (matches layout engine)
+const MAX_WIDGETS = @import("layout/engine.zig").MAX_ELEMENTS;
+
+/// Widget type enumeration for metadata
+const WidgetType = enum(u8) {
+    root,
+    container,
+    button,
+    text,
+    checkbox,
+    text_input,
+    separator,
+};
+
+/// Metadata for each widget (for reconciliation)
+const WidgetMeta = struct {
+    parent_hash: u32 = 0, // Parent's widget ID hash
+    sibling_order: u16 = 0, // Position among siblings
+    widget_type: WidgetType = .root,
+};
 
 /// Configuration options for GUI initialization
 pub const GUIConfig = struct {
@@ -100,11 +124,33 @@ pub const GUI = struct {
     im_hot_id: u64 = 0, // Widget currently under mouse
     im_active_id: u64 = 0, // Widget being interacted with
 
-    /// ID generation
+    /// ID generation (legacy - kept for compatibility)
     im_id_counter: u64 = 0,
 
     /// Text formatting buffer (for fmt args)
     im_text_buffer: [1024]u8 = undefined,
+
+    // =========================================================================
+    // Immediate Mode Reconciliation (bridges immediate API with retained layout)
+    // =========================================================================
+
+    /// Widget ID → Layout index mapping (persistent across frames)
+    widget_to_layout: std.AutoHashMap(u32, u32),
+
+    /// Layout index → Widget metadata (for parent tracking, reordering)
+    widget_meta: [MAX_WIDGETS]WidgetMeta = [_]WidgetMeta{.{}} ** MAX_WIDGETS,
+
+    /// Which layout indices were "seen" this frame
+    seen_this_frame: std.StaticBitSet(MAX_WIDGETS) = std.StaticBitSet(MAX_WIDGETS).initEmpty(),
+
+    /// ID stack for hierarchical widget scoping
+    id_stack: IdStack = IdStack.init(null),
+
+    /// Current parent stack (layout indices)
+    parent_stack: std.BoundedArray(u32, 64) = .{},
+
+    /// Root widget ID (created once)
+    root_layout_index: ?u32 = null,
 
     /// Initialize the GUI system (headless mode, no renderer)
     /// Use initWithRenderer() if you have a platform renderer ready.
@@ -156,6 +202,7 @@ pub const GUI = struct {
             .asset_manager = asset_manager,
             .config = config,
             .running = true,
+            .widget_to_layout = std.AutoHashMap(u32, u32).init(allocator),
         };
 
         return gui;
@@ -163,6 +210,10 @@ pub const GUI = struct {
 
     /// Clean up all resources used by the GUI
     pub fn deinit(self: *GUI) void {
+        // Clean up reconciliation structures
+        self.widget_to_layout.deinit();
+        self.id_stack.deinit();
+
         // Clean up all subsystems in reverse order of creation
         if (self.animation_system) |animation_system| {
             animation_system.deinit();
@@ -206,6 +257,34 @@ pub const GUI = struct {
         // Clear hot ID (will be set during rendering)
         self.im_hot_id = 0;
 
+        // === Immediate Mode Reconciliation ===
+        // Clear the "seen this frame" tracking
+        self.seen_this_frame = std.StaticBitSet(MAX_WIDGETS).initEmpty();
+
+        // Clear ID stack for fresh frame
+        self.id_stack.clear();
+
+        // Reset parent stack with root
+        self.parent_stack.len = 0;
+
+        // Ensure root element exists
+        if (self.root_layout_index == null) {
+            const root_index = try self.layout_engine.addElement(null, .{
+                .direction = .column,
+                .width = @floatFromInt(self.config.window_width),
+                .height = @floatFromInt(self.config.window_height),
+            });
+            self.root_layout_index = root_index;
+            try self.widget_to_layout.put(0, root_index); // Hash 0 = root
+        }
+
+        // Start with root as current parent
+        self.parent_stack.appendAssumeCapacity(self.root_layout_index.?);
+        self.seen_this_frame.set(self.root_layout_index.?);
+
+        // Begin layout frame
+        self.layout_engine.beginFrame();
+
         // Process any queued events
         {
             profiler.zone(@src(), "EventManager.processEvents", .{});
@@ -237,21 +316,43 @@ pub const GUI = struct {
         profiler.zone(@src(), "GUI.endFrame", .{});
         defer profiler.endZone();
 
-        // Layout is computed during widget rendering in immediate-mode
-        // No separate layout pass needed
+        // === Immediate Mode Reconciliation ===
+        // Remove widgets that weren't seen this frame
+        {
+            profiler.zone(@src(), "GUI.reconcileWidgets", .{});
+            defer profiler.endZone();
+
+            var to_remove = std.ArrayList(u32).init(self.allocator);
+            defer to_remove.deinit();
+
+            var iter = self.widget_to_layout.iterator();
+            while (iter.next()) |entry| {
+                const layout_index = entry.value_ptr.*;
+                if (!self.seen_this_frame.isSet(layout_index)) {
+                    to_remove.append(entry.key_ptr.*) catch {};
+                }
+            }
+
+            for (to_remove.items) |widget_hash| {
+                if (self.widget_to_layout.get(widget_hash)) |layout_index| {
+                    self.layout_engine.removeElement(layout_index);
+                    _ = self.widget_to_layout.remove(widget_hash);
+                }
+            }
+        }
+
+        // Compute layout for dirty elements
+        {
+            profiler.zone(@src(), "GUI.computeLayout", .{});
+            defer profiler.endZone();
+
+            const frame_width: f32 = @floatFromInt(self.config.window_width);
+            const frame_height: f32 = @floatFromInt(self.config.window_height);
+            try self.layout_engine.computeLayout(frame_width, frame_height);
+        }
 
         // Render if we have a renderer
         if (self.renderer) |renderer| {
-            // Removed root_view painting - moving to immediate-mode API
-            // if (self.root_view) |root| {
-            //     profiler.zone(@src(), "Renderer.paint", .{});
-            //     defer profiler.endZone();
-            //     const render_context = RenderContext{
-            //         .renderer = renderer,
-            //         .style_system = self.style_system,
-            //     };
-            //     self.paintView(root, &render_context);
-            // }
             {
                 profiler.zone(@src(), "Renderer.endFrame", .{});
                 defer profiler.endZone();
@@ -311,10 +412,80 @@ pub const GUI = struct {
     }
 
     // =========================================================================
+    // Widget ID Management (for immediate-mode reconciliation)
+    // =========================================================================
+
+    /// Push an ID scope onto the stack (comptime version - zero cost)
+    pub fn pushId(self: *GUI, comptime label: []const u8) void {
+        self.id_stack.push(label);
+    }
+
+    /// Push an index onto the ID stack (for loops)
+    pub fn pushIndex(self: *GUI, index: usize) void {
+        self.id_stack.pushIndex(index);
+    }
+
+    /// Pop the most recent ID from the stack
+    pub fn popId(self: *GUI) void {
+        self.id_stack.pop();
+    }
+
+    /// Get or create a layout element for a widget
+    /// Returns the layout index for the widget
+    fn getOrCreateElement(self: *GUI, widget_hash: u32, widget_type: WidgetType, style: FlexStyle) !u32 {
+        const current_parent_layout = if (self.parent_stack.len > 0)
+            self.parent_stack.buffer[self.parent_stack.len - 1]
+        else
+            self.root_layout_index orelse 0;
+
+        const current_parent_hash = self.id_stack.getCurrentHash();
+
+        if (self.widget_to_layout.get(widget_hash)) |existing_index| {
+            // Widget exists - check if parent changed (re-parenting needed)
+            const meta = &self.widget_meta[existing_index];
+            if (meta.parent_hash != current_parent_hash) {
+                // Re-parent the widget
+                self.layout_engine.reparent(existing_index, current_parent_layout);
+                meta.parent_hash = current_parent_hash;
+            }
+
+            // Update style if needed
+            self.layout_engine.setStyle(existing_index, style);
+
+            // Mark as seen
+            self.seen_this_frame.set(existing_index);
+            return existing_index;
+        }
+
+        // New widget - create layout element
+        const new_index = try self.layout_engine.addElement(current_parent_layout, style);
+
+        try self.widget_to_layout.put(widget_hash, new_index);
+        self.widget_meta[new_index] = .{
+            .parent_hash = current_parent_hash,
+            .sibling_order = 0,
+            .widget_type = widget_type,
+        };
+
+        // Mark as seen
+        self.seen_this_frame.set(new_index);
+
+        return new_index;
+    }
+
+    /// Get the computed rect for a widget by its hash
+    pub fn getWidgetRect(self: *GUI, widget_hash: u32) ?Rect {
+        if (self.widget_to_layout.get(widget_hash)) |layout_index| {
+            return self.layout_engine.getRect(layout_index);
+        }
+        return null;
+    }
+
+    // =========================================================================
     // Immediate-Mode UI API
     // =========================================================================
 
-    /// Generate a unique ID for a widget based on label
+    /// Generate a unique ID for a widget based on label (legacy)
     fn generateId(self: *GUI, label: []const u8) u64 {
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(label);
