@@ -640,6 +640,26 @@ const WidgetMeta = struct {
 };
 ```
 
+**Why sibling_order?** This field enables **smooth reorder animations** when using stable IDs:
+
+```zig
+// With stable IDs (item.id doesn't change when array reorders)
+for (items) |item| {
+    gui.beginDynamic(item.stable_id, .{});
+    // ...
+}
+```
+
+When the user reorders items (drag-and-drop, sort), widget IDs stay the same but positions change. Without `sibling_order` tracking:
+- We'd have to recreate widgets (losing state, no animation possible)
+
+With `sibling_order` tracking:
+- Detect position changes → call `layout_engine.reorderSiblings()`
+- Animate widgets moving to new positions
+- Preserve widget state across reorder
+
+Index-based IDs (`beginIndexed`) don't need this (index IS identity), but stable IDs require it for proper animation support.
+
 ### Frame Lifecycle
 
 ```zig
