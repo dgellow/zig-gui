@@ -419,6 +419,245 @@ const total_count = engine.getElementCount();
 
 ---
 
+## Immediate Mode Reconciliation
+
+zig-gui provides an **immediate-mode API** (simple, declare UI every frame) backed by a **retained layout engine** (fast, caches results). This section explains how these two models are bridged.
+
+### The Problem
+
+Immediate-mode API:
+```zig
+fn myUI(gui: *GUI, state: *AppState) !void {
+    if (try gui.button("Save")) { ... }  // Called every frame
+}
+```
+
+Retained layout engine:
+```zig
+const index = engine.addElement(parent, style);  // Creates persistent element
+engine.computeLayout(width, height);              // Caches results
+```
+
+**Challenge**: How does `gui.button("Save")` map to the layout engine without:
+- Rebuilding the tree every frame (wasteful)
+- React-style virtual DOM diffing (complex, memory-heavy)
+
+### Solution: Index Reuse via Widget ID Mapping
+
+Widget IDs (stable across frames) map to layout indices (internal handles):
+
+```
+Widget ID (hash of "Save") → Layout Index (e.g., 42)
+```
+
+Each frame:
+1. Widget function called → lookup ID in persistent hash map
+2. If found → reuse existing layout element
+3. If not found → create new element, store mapping
+4. End of frame → remove elements not "seen" this frame
+
+### Why Not Dear ImGui's Approach?
+
+Dear ImGui rebuilds layout inline during UI traversal with one-frame size latency:
+
+```cpp
+// Dear ImGui - every frame:
+ImGui::Begin("Window");      // Size based on LAST frame's content
+ImGui::Text("Hello");        // Measure text, advance cursor
+ImGui::End();                // Finalize size for NEXT frame
+```
+
+**Comparison:**
+
+| Aspect | Dear ImGui | zig-gui (Index Reuse) |
+|--------|-----------|----------------------|
+| **Memory (1000 widgets)** | ~90 KB | ~200 KB |
+| **CPU (steady state)** | ~23 μs/frame | ~16 μs/frame |
+| **Structural changes** | +0.8 μs | +6.5 μs |
+| **Size latency** | 1 frame (glitches) | 0 frames (correct) |
+| **Layout power** | Cursor-based | Full flexbox |
+| **Idle CPU** | Continuous polling | 0% (event-driven) |
+
+**We chose Index Reuse because:**
+
+1. **Zero latency**: Layout is correct on the first frame. No "popping" when content changes size. Professional desktop apps require this.
+
+2. **0% idle CPU**: The retained layout + dirty tracking enables true event-driven execution. Dear ImGui requires polling.
+
+3. **Flexbox**: Complex layouts (flex-grow, space-between, align-items) are declarative. Dear ImGui requires manual positioning.
+
+4. **Cached layout**: When state unchanged, skip the UI function entirely. Dear ImGui must run every frame.
+
+**Dear ImGui wins for:**
+- Highly dynamic UIs (constant widget creation/destruction)
+- Extreme memory constraints (<50 KB total)
+- Simple vertical stacking layouts
+
+### Data Structures
+
+```zig
+pub const GUI = struct {
+    // === Persistent (survives across frames) ===
+
+    /// Widget ID → Layout index mapping
+    widget_to_layout: std.AutoHashMap(u32, u32),
+
+    /// Layout index → Widget metadata (for parent tracking, reordering)
+    widget_meta: [MAX_ELEMENTS]WidgetMeta,
+
+    // === Per-frame (cleared each frame) ===
+
+    /// Which layout indices were "seen" this frame
+    seen_this_frame: std.StaticBitSet(MAX_ELEMENTS),
+
+    /// Current parent stack (for nesting)
+    parent_stack: std.BoundedArray(u32, 64),
+
+    // === The layout engine ===
+    layout_engine: *LayoutEngine,
+};
+
+const WidgetMeta = struct {
+    parent_hash: u32,     // Parent's widget ID (detect re-parenting)
+    sibling_order: u16,   // Position among siblings (detect reordering)
+    widget_type: u8,      // button, text, container, etc.
+};
+```
+
+### Frame Lifecycle
+
+```zig
+pub fn beginFrame(self: *GUI) void {
+    self.seen_this_frame.clear();
+    self.parent_stack.clear();
+    self.parent_stack.append(ROOT_INDEX);
+}
+
+pub fn button(self: *GUI, comptime label: []const u8) !bool {
+    const widget_hash = self.id_stack.combine(comptime hash(label));
+    const current_parent = self.parent_stack.getLast();
+
+    // Lookup or create layout element
+    const layout_index = self.getOrCreateElement(widget_hash, current_parent, .button);
+
+    // Mark as seen this frame
+    self.seen_this_frame.set(layout_index);
+
+    // Return interaction state
+    return self.event_manager.wasClicked(layout_index);
+}
+
+fn getOrCreateElement(self: *GUI, widget_hash: u32, parent_hash: u32, widget_type: WidgetType) !u32 {
+    if (self.widget_to_layout.get(widget_hash)) |existing| {
+        // Existing widget - check if parent changed (re-parenting)
+        const meta = &self.widget_meta[existing];
+        if (meta.parent_hash != parent_hash) {
+            const new_parent = self.widget_to_layout.get(parent_hash) orelse ROOT_INDEX;
+            self.layout_engine.reparent(existing, new_parent);
+            meta.parent_hash = parent_hash;
+        }
+        return existing;
+    }
+
+    // New widget - create layout element
+    const parent_index = self.widget_to_layout.get(parent_hash) orelse ROOT_INDEX;
+    const new_index = try self.layout_engine.addElement(parent_index, .{});
+
+    try self.widget_to_layout.put(widget_hash, new_index);
+    self.widget_meta[new_index] = .{
+        .parent_hash = parent_hash,
+        .sibling_order = 0,
+        .widget_type = widget_type,
+    };
+
+    return new_index;
+}
+
+pub fn endFrame(self: *GUI) !void {
+    // Remove widgets not seen this frame
+    var to_remove = std.ArrayList(u32).init(self.allocator);
+    defer to_remove.deinit();
+
+    var iter = self.widget_to_layout.iterator();
+    while (iter.next()) |entry| {
+        if (!self.seen_this_frame.isSet(entry.value_ptr.*)) {
+            try to_remove.append(entry.key_ptr.*);
+        }
+    }
+
+    for (to_remove.items) |widget_hash| {
+        const layout_index = self.widget_to_layout.get(widget_hash).?;
+        self.layout_engine.removeElement(layout_index);
+        _ = self.widget_to_layout.remove(widget_hash);
+    }
+
+    // Compute layout for dirty elements
+    try self.layout_engine.computeLayout(self.viewport_width, self.viewport_height);
+}
+```
+
+### Memory Budget by Platform
+
+| Platform | Max Widgets | Per-Widget | Total | % of Budget |
+|----------|-------------|------------|-------|-------------|
+| **Desktop** | 4096 | 200 bytes | 800 KB | <1% of 1GB |
+| **Mobile** | 1024 | 200 bytes | 200 KB | <0.1% of 200MB |
+| **Embedded** | 64 | 80 bytes* | 5 KB | 15% of 32KB |
+
+*Embedded uses compact configuration: smaller FlexStyle, no caching.
+
+### Embedded Optimization
+
+For 32KB RAM targets, use compact mode:
+
+```zig
+pub const EmbeddedConfig = struct {
+    pub const MAX_ELEMENTS = 64;
+    pub const CACHE_ENABLED = false;      // Save 48 bytes/element
+    pub const DEBUG_ENABLED = false;      // No debug strings
+    pub const FlexStyle = FlexStyleCompact; // 32 bytes vs 56
+};
+
+// Compact per-widget cost:
+// - FlexStyle:        32 bytes (vs 56)
+// - Rect:             16 bytes
+// - Tree links:       12 bytes
+// - Widget mapping:   12 bytes
+// - Widget meta:       7 bytes
+// - Seen bit:          0.125 bytes
+// ─────────────────────────────
+// Total:             ~80 bytes per widget
+//
+// 64 widgets × 80 bytes = 5 KB (15% of 32KB budget)
+```
+
+### Required Layout Engine Extensions
+
+The reconciliation system requires these additions to the layout engine:
+
+```zig
+/// Remove element from tree (for widgets that disappeared)
+pub fn removeElement(self: *LayoutEngine, index: u32) void {
+    // 1. Unlink from parent's child list
+    // 2. Recursively remove children
+    // 3. Add index to free list for reuse
+}
+
+/// Move element to new parent (for re-parenting)
+pub fn reparent(self: *LayoutEngine, index: u32, new_parent: u32) void {
+    // 1. Unlink from old parent
+    // 2. Link to new parent
+    // 3. Mark both parents dirty
+}
+
+/// Reorder siblings (for order changes)
+pub fn reorderSiblings(self: *LayoutEngine, parent: u32, new_order: []const u32) void {
+    // Rebuild sibling linked list in new order
+}
+```
+
+---
+
 ## Platform Integration
 
 ### Desktop (SDL)
