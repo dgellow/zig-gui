@@ -19,6 +19,7 @@ const CounterState = struct {
     counter: Tracked(i32) = .{ .value = 0 },
     clicks: Tracked(u32) = .{ .value = 0 },
     name: Tracked([]const u8) = .{ .value = "World" },
+    checkbox_checked: Tracked(bool) = .{ .value = false },
 };
 
 /// UI function - called every frame or when state changes
@@ -34,17 +35,21 @@ fn counterUI(gui: *GUI, state: *CounterState) !void {
 
     // Buttons to modify counter
     gui.beginRow();
-    if (try gui.button("Increment")) {
+
+    gui.button("Increment");
+    if (gui.wasClicked("Increment")) {
         state.counter.set(state.counter.get() + 1);
         state.clicks.set(state.clicks.get() + 1);
     }
 
-    if (try gui.button("Decrement")) {
+    gui.button("Decrement");
+    if (gui.wasClicked("Decrement")) {
         state.counter.set(state.counter.get() - 1);
         state.clicks.set(state.clicks.get() + 1);
     }
 
-    if (try gui.button("Reset")) {
+    gui.button("Reset");
+    if (gui.wasClicked("Reset")) {
         state.counter.set(0);
         state.clicks.set(state.clicks.get() + 1);
     }
@@ -61,17 +66,16 @@ fn counterUI(gui: *GUI, state: *CounterState) !void {
     gui.newLine();
 
     // Checkbox example
-    const checked = state.counter.get() > 10;
-    if (try gui.checkbox(checked)) {
-        // Toggle would happen here if we tracked checkbox state
+    if (gui.checkbox("Counter > 10", state.checkbox_checked.get())) {
+        state.checkbox_checked.set(!state.checkbox_checked.get());
     }
-    try gui.text("Counter > 10", .{});
     gui.newLine();
 
     gui.separator();
 
     // Exit button
-    if (try gui.button("Exit")) {
+    gui.button("Exit");
+    if (gui.wasClicked("Exit")) {
         gui.requestExit();
     }
 }

@@ -123,7 +123,7 @@ pub const GUI = struct {
     /// Widget interaction state
     im_hot_id: u64 = 0, // Widget currently under mouse
     im_active_id: u64 = 0, // Widget being interacted with
-
+    im_clicked_id: u64 = 0, // Widget clicked this frame (0 = none)
 
     /// Text formatting buffer (for fmt args)
     im_text_buffer: [1024]u8 = undefined,
@@ -251,6 +251,9 @@ pub const GUI = struct {
 
         // Clear hot ID (will be set during rendering)
         self.im_hot_id = 0;
+
+        // Clear clicked ID from previous frame
+        self.im_clicked_id = 0;
 
         // === Immediate Mode Reconciliation ===
         // Clear the "seen this frame" tracking
@@ -650,37 +653,39 @@ pub const GUI = struct {
         }
     }
 
-    /// Create a button with comptime label and return if clicked
+    /// Declare a button widget with comptime label.
+    /// Use wasClicked() to check if it was clicked.
     ///
     /// Example:
     /// ```zig
-    /// if (gui.button("Click me")) {
+    /// gui.button("Click me");
+    /// if (gui.wasClicked("Click me")) {
     ///     state.counter.set(state.counter.get() + 1);
     /// }
     /// ```
-    pub fn button(self: *GUI, comptime label: []const u8) bool {
-        return self.buttonCore(comptime WidgetId.from(label).hash, label);
+    pub fn button(self: *GUI, comptime label: []const u8) void {
+        self.buttonCore(comptime WidgetId.from(label).hash, label);
     }
 
-    /// Create a button with index - for loops
-    pub fn buttonIndexed(self: *GUI, comptime label: []const u8, index: usize) bool {
+    /// Declare a button with index - for loops
+    pub fn buttonIndexed(self: *GUI, comptime label: []const u8, index: usize) void {
         const base_hash = comptime WidgetId.from(label).hash;
         const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
-        return self.buttonCore(indexed_hash, label);
+        self.buttonCore(indexed_hash, label);
     }
 
-    /// Create a button with runtime string - for dynamic content
-    pub fn buttonDynamic(self: *GUI, label: []const u8) bool {
-        return self.buttonCore(WidgetId.runtime(label).hash, label);
+    /// Declare a button with runtime string - for dynamic content
+    pub fn buttonDynamic(self: *GUI, label: []const u8) void {
+        self.buttonCore(WidgetId.runtime(label).hash, label);
     }
 
-    /// Create a button with pre-computed ID - for C API interop
-    pub fn buttonById(self: *GUI, id: u32, display_label: []const u8) bool {
-        return self.buttonCore(id, display_label);
+    /// Declare a button with pre-computed ID - for C API interop
+    pub fn buttonById(self: *GUI, id: u32, display_label: []const u8) void {
+        self.buttonCore(id, display_label);
     }
 
     /// Core button implementation - takes pre-computed hash
-    fn buttonCore(self: *GUI, id_hash: u32, display_label: []const u8) bool {
+    fn buttonCore(self: *GUI, id_hash: u32, display_label: []const u8) void {
         // Combine with current ID scope
         const final_id: u64 = self.id_stack.combine(id_hash);
 
@@ -704,7 +709,6 @@ pub const GUI = struct {
         }
 
         // Handle interaction
-        var clicked = false;
         const is_active = self.im_active_id == final_id;
 
         if (is_hot) {
@@ -714,7 +718,7 @@ pub const GUI = struct {
         }
 
         if (is_active and is_hot and self.mouseClicked()) {
-            clicked = true;
+            self.im_clicked_id = final_id;
         }
 
         // Draw button if we have a renderer
@@ -751,9 +755,93 @@ pub const GUI = struct {
         if (self.im_cursor_x > window_width - self.im_padding) {
             self.newLine();
         }
-
-        return clicked;
     }
+
+    // =========================================================================
+    // Interaction Query Functions
+    // =========================================================================
+
+    /// Check if widget with comptime label was clicked this frame
+    pub fn wasClicked(self: *const GUI, comptime label: []const u8) bool {
+        const id: u64 = self.id_stack.combine(comptime WidgetId.from(label).hash);
+        return self.im_clicked_id == id and id != 0;
+    }
+
+    /// Check if widget with index was clicked this frame
+    pub fn wasClickedIndexed(self: *const GUI, comptime label: []const u8, index: usize) bool {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        const id: u64 = self.id_stack.combine(indexed_hash);
+        return self.im_clicked_id == id and id != 0;
+    }
+
+    /// Check if widget with runtime string was clicked this frame
+    pub fn wasClickedDynamic(self: *const GUI, label: []const u8) bool {
+        const id: u64 = self.id_stack.combine(WidgetId.runtime(label).hash);
+        return self.im_clicked_id == id and id != 0;
+    }
+
+    /// Check if widget with pre-computed ID was clicked this frame
+    pub fn wasClickedId(self: *const GUI, id_hash: u32) bool {
+        const id: u64 = self.id_stack.combine(id_hash);
+        return self.im_clicked_id == id and id != 0;
+    }
+
+    /// Check if widget with comptime label is hovered
+    pub fn isHovered(self: *const GUI, comptime label: []const u8) bool {
+        const id: u64 = self.id_stack.combine(comptime WidgetId.from(label).hash);
+        return self.im_hot_id == id and id != 0;
+    }
+
+    /// Check if widget with index is hovered
+    pub fn isHoveredIndexed(self: *const GUI, comptime label: []const u8, index: usize) bool {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        const id: u64 = self.id_stack.combine(indexed_hash);
+        return self.im_hot_id == id and id != 0;
+    }
+
+    /// Check if widget with runtime string is hovered
+    pub fn isHoveredDynamic(self: *const GUI, label: []const u8) bool {
+        const id: u64 = self.id_stack.combine(WidgetId.runtime(label).hash);
+        return self.im_hot_id == id and id != 0;
+    }
+
+    /// Check if widget with pre-computed ID is hovered
+    pub fn isHoveredId(self: *const GUI, id_hash: u32) bool {
+        const id: u64 = self.id_stack.combine(id_hash);
+        return self.im_hot_id == id and id != 0;
+    }
+
+    /// Check if widget with comptime label is being pressed
+    pub fn isPressed(self: *const GUI, comptime label: []const u8) bool {
+        const id: u64 = self.id_stack.combine(comptime WidgetId.from(label).hash);
+        return self.im_active_id == id and id != 0;
+    }
+
+    /// Check if widget with index is being pressed
+    pub fn isPressedIndexed(self: *const GUI, comptime label: []const u8, index: usize) bool {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        const id: u64 = self.id_stack.combine(indexed_hash);
+        return self.im_active_id == id and id != 0;
+    }
+
+    /// Check if widget with runtime string is being pressed
+    pub fn isPressedDynamic(self: *const GUI, label: []const u8) bool {
+        const id: u64 = self.id_stack.combine(WidgetId.runtime(label).hash);
+        return self.im_active_id == id and id != 0;
+    }
+
+    /// Check if widget with pre-computed ID is being pressed
+    pub fn isPressedId(self: *const GUI, id_hash: u32) bool {
+        const id: u64 = self.id_stack.combine(id_hash);
+        return self.im_active_id == id and id != 0;
+    }
+
+    // =========================================================================
+    // Checkbox Widget
+    // =========================================================================
 
     /// Create a checkbox with comptime label
     pub fn checkbox(self: *GUI, comptime label: []const u8, checked: bool) bool {
@@ -1060,18 +1148,18 @@ test "GUI button with comptime label" {
     try gui.beginFrame();
 
     // Initially, no button is clicked
-    const clicked1 = gui.button("Test Button");
-    try std.testing.expect(!clicked1);
+    gui.button("Test Button");
+    try std.testing.expect(!gui.wasClicked("Test Button"));
 
     // Simulate mouse over button (approximate position)
     gui.setMousePosition(50, 12);
 
-    // Mouse down - button should not click yet
+    // Mouse down - button should not click yet (click happens on release)
     gui.setMouseButton(true);
-    const clicked2 = gui.button("Test Button");
-    try std.testing.expect(!clicked2);
+    gui.button("Test Button 2");
+    try std.testing.expect(!gui.wasClicked("Test Button 2"));
 
-    // Mouse up - button should click
+    // Mouse up - button state is tracked internally
     gui.setMouseButton(false);
 
     try gui.endFrame();

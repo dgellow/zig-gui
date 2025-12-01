@@ -178,17 +178,20 @@ fn gameUI(gui: *GUI, state: *GameState) !void {
 
     gui.newLine();
 
-    if (gui.button("Heal")) {
+    gui.button("Heal");
+    if (gui.wasClicked("Heal")) {
         state.health.set(@min(100, state.health.get() + 10));
     }
 
-    if (gui.button("Cast Spell")) {
+    gui.button("Cast Spell");
+    if (gui.wasClicked("Cast Spell")) {
         if (state.mana.get() >= 10) {
             state.mana.set(state.mana.get() - 10);
         }
     }
 
-    if (gui.button("Add Score")) {
+    gui.button("Add Score");
+    if (gui.wasClicked("Add Score")) {
         state.score.set(state.score.get() + 100);
     }
 

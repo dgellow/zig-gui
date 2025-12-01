@@ -64,18 +64,22 @@ fn gameHudUI(gui: *GUI, state: *GameState) !void {
 
         // Action buttons
         gui.beginRow();
-        if (try gui.button("Heal")) {
+
+        gui.button("Heal");
+        if (gui.wasClicked("Heal")) {
             state.health.set(@min(100, state.health.get() + 25));
         }
 
-        if (try gui.button("Cast Spell")) {
+        gui.button("Cast Spell");
+        if (gui.wasClicked("Cast Spell")) {
             if (state.mana.get() >= 10) {
                 state.mana.set(state.mana.get() - 10);
                 state.score.set(state.score.get() + 50);
             }
         }
 
-        if (try gui.button("Sprint")) {
+        gui.button("Sprint");
+        if (gui.wasClicked("Sprint")) {
             if (state.stamina.get() >= 20) {
                 state.stamina.set(state.stamina.get() - 20);
             }
@@ -99,11 +103,13 @@ fn gameHudUI(gui: *GUI, state: *GameState) !void {
 
         gui.separator();
 
-        if (try gui.button("Spawn Enemy")) {
+        gui.button("Spawn Enemy");
+        if (gui.wasClicked("Spawn Enemy")) {
             state.enemies.set(state.enemies.get() + 1);
         }
 
-        if (try gui.button("Next Level")) {
+        gui.button("Next Level");
+        if (gui.wasClicked("Next Level")) {
             state.level.set(state.level.get() + 1);
             state.enemies.set(0);
             state.health.set(100);
@@ -119,7 +125,8 @@ fn gameHudUI(gui: *GUI, state: *GameState) !void {
     gui.newLine();
 
     // Exit button
-    if (try gui.button("Exit Game")) {
+    gui.button("Exit Game");
+    if (gui.wasClicked("Exit Game")) {
         gui.requestExit();
     }
 
@@ -168,7 +175,7 @@ pub fn main() !void {
         platform.interface(),
         .{
             .mode = .game_loop,
-            .target_fps = 1000,  // No sleep, run as fast as possible for demo
+            .target_fps = 1000, // No sleep, run as fast as possible for demo
         },
     );
     defer app.deinit();
