@@ -146,14 +146,16 @@ const AppState = struct {
     items: Tracked(std.BoundedArray(Item, 100)) = .{ .value = .{} },
 };
 
-fn myApp(gui: *GUI, state: *AppState) !void {
-    try gui.text("Counter: {}", .{state.counter.get()});
+fn myApp(gui: *GUI, state: *AppState) void {
+    gui.text("Counter: {}", .{state.counter.get()});
 
-    if (try gui.button("Increment")) {
+    gui.button("Increment");
+    if (gui.wasClicked("Increment")) {
         state.counter.set(state.counter.get() + 1);
     }
 
-    if (try gui.button("Add Item")) {
+    gui.button("Add Item");
+    if (gui.wasClicked("Add Item")) {
         state.items.ptr().append(.{ .name = "New" }) catch {};
     }
 }
@@ -253,31 +255,53 @@ pub const WidgetId = packed struct {
 
 ### Widget Function Variants
 
-Zig provides three entry points for different use cases:
+Widget functions **return void** - they declare the widget exists. Interaction state is queried separately via `wasClicked`, `isHovered`, etc.
 
 ```zig
 // 1. Comptime string (99% of calls) - zero runtime cost
-pub fn widget(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
-    return self.widgetCore(comptime WidgetId.from(label).hash, style);
+pub fn button(self: *GUI, comptime label: []const u8) void {
+    self.buttonCore(comptime WidgetId.from(label).hash, label);
 }
 
-// 2. Runtime string (rare - user-generated content, localization)
-pub fn widgetDynamic(self: *GUI, label: []const u8, style: FlexStyle) !void {
-    return self.widgetCore(WidgetId.runtime(label).hash, style);
+// 2. With index (for loops)
+pub fn buttonIndexed(self: *GUI, comptime label: []const u8, index: usize) void {
+    const indexed_hash = comptime WidgetId.from(label).hash ^ (@truncate(index) +% 1) *% 0x9e3779b9;
+    self.buttonCore(indexed_hash, label);
 }
 
-// 3. Pre-computed ID (C API interop, cached IDs)
-pub fn widgetById(self: *GUI, id: u32, style: FlexStyle) !void {
-    return self.widgetCore(id, style);
+// 3. Runtime string (rare - user-generated content)
+pub fn buttonDynamic(self: *GUI, label: []const u8) void {
+    self.buttonCore(WidgetId.runtime(label).hash, label);
 }
 
-// Core implementation - shared by all variants
-fn widgetCore(self: *GUI, id_hash: u32, style: FlexStyle) !void {
-    const final_id = self.id_stack.combine(id_hash);
-    const layout_idx = try self.getOrCreateElement(final_id, .widget, style);
-    self.seen_this_frame.set(layout_idx);
+// 4. Pre-computed ID (C API interop)
+pub fn buttonById(self: *GUI, id: u32, display_label: []const u8) void {
+    self.buttonCore(id, display_label);
 }
 ```
+
+### Interaction Query Functions
+
+Query interaction state with matching variants:
+
+```zig
+// Check if widget was clicked this frame
+pub fn wasClicked(self: *GUI, comptime label: []const u8) bool;
+pub fn wasClickedIndexed(self: *GUI, comptime label: []const u8, index: usize) bool;
+pub fn wasClickedDynamic(self: *GUI, label: []const u8) bool;
+pub fn wasClickedId(self: *GUI, id: u32) bool;
+
+// Check if widget is currently hovered
+pub fn isHovered(self: *GUI, comptime label: []const u8) bool;
+pub fn isHoveredIndexed(self: *GUI, comptime label: []const u8, index: usize) bool;
+// ... same pattern for Dynamic and Id variants
+
+// Check if widget is being pressed (mouse down over it)
+pub fn isPressed(self: *GUI, comptime label: []const u8) bool;
+// ... same pattern
+```
+
+This separation allows flexible queries (hover for tooltips, pressed for visual feedback) without coupling to widget declaration.
 
 ### Container Scoping
 
@@ -288,13 +312,17 @@ gui.begin("toolbar", .{ .direction = .row });  // Pushes "toolbar" scope
 defer gui.end();                                // Pops scope
 
 // These buttons get IDs: hash("toolbar") ^ hash("file"), etc.
-if (try gui.button("file")) { ... }
-if (try gui.button("edit")) { ... }
+gui.button("file");
+gui.button("edit");
+
+if (gui.wasClicked("file")) { ... }
+if (gui.wasClicked("edit")) { ... }
 
 gui.begin("submenu", .{});  // Pushes "submenu", scope is now toolbar > submenu
 defer gui.end();
 
-if (try gui.button("copy")) { ... }  // ID: toolbar ^ submenu ^ copy
+gui.button("copy");  // ID: toolbar ^ submenu ^ copy
+if (gui.wasClicked("copy")) { ... }
 ```
 
 This matches React/SwiftUI mental model and reduces boilerplate vs manual `pushId`/`popId`.
@@ -337,9 +365,10 @@ pub const IdStack = struct {
 ### Zig Usage Examples
 
 ```zig
-fn myApp(gui: *GUI, state: *AppState) !void {
+fn myApp(gui: *GUI, state: *AppState) void {
     // Simple widget - comptime hash
-    if (try gui.button("Settings")) {
+    gui.button("Settings");
+    if (gui.wasClicked("Settings")) {
         // ...
     }
 
@@ -348,7 +377,8 @@ fn myApp(gui: *GUI, state: *AppState) !void {
     defer gui.end();
 
     // ID = hash("settings_panel") ^ hash("Save")
-    if (try gui.button("Save")) {
+    gui.button("Save");
+    if (gui.wasClicked("Save")) {
         // ...
     }
 
@@ -357,9 +387,10 @@ fn myApp(gui: *GUI, state: *AppState) !void {
         gui.beginIndexed("item", i, .{ .height = 40 });
         defer gui.end();
 
-        try gui.text(item.name);
+        gui.text(item.name);
         // ID = settings_panel ^ item ^ i ^ Delete
-        if (try gui.button("Delete")) {
+        gui.button("Delete");
+        if (gui.wasClickedIndexed("Delete", i)) {
             state.items.ptr().orderedRemove(i);
         }
     }
@@ -511,8 +542,9 @@ zig-gui provides an **immediate-mode API** (simple, declare UI every frame) back
 
 Immediate-mode API:
 ```zig
-fn myUI(gui: *GUI, state: *AppState) !void {
-    if (try gui.button("Save")) { ... }  // Called every frame
+fn myUI(gui: *GUI, state: *AppState) void {
+    gui.button("Save");  // Called every frame
+    if (gui.wasClicked("Save")) { ... }
 }
 ```
 
@@ -1160,7 +1192,8 @@ pub fn main() !void {
         gui.begin("toolbar", .{ .direction = .row, .height = 48 });
         defer gui.end();
 
-        if (gui.button("file")) {  // ID: toolbar ^ file
+        gui.button("file");  // ID: toolbar ^ file
+        if (gui.wasClicked("file")) {
             try openFileMenu();
         }
 
@@ -1169,8 +1202,9 @@ pub fn main() !void {
             gui.beginIndexed("item", i, .{ .height = 40 });
             defer gui.end();
 
-            try gui.text(item.name);
-            if (gui.button("delete")) {  // ID: toolbar ^ item ^ i ^ delete
+            gui.text(item.name);
+            gui.button("delete");  // ID: toolbar ^ item ^ i ^ delete
+            if (gui.wasClickedIndexed("delete", i)) {
                 items.remove(i);
             }
         }
@@ -1345,7 +1379,8 @@ class Counter:
         with gui.column():
             gui.text(f"Count: {self.count}")
 
-            if gui.button("Increment"):
+            gui.button("Increment")
+            if gui.was_clicked("Increment"):
                 self.count += 1
 
             # Loops with automatic index scoping
@@ -1353,7 +1388,8 @@ class Counter:
                 for i, item in enumerate(self.items):
                     with gui.scope(i):
                         gui.text(item.name)
-                        if gui.button("Delete"):
+                        gui.button("Delete")
+                        if gui.was_clicked("Delete"):
                             self.items.remove(item)
 ```
 
@@ -1390,7 +1426,8 @@ class Counter {
         gui.column(() => {
             gui.text(`Count: ${this.count}`);
 
-            if (gui.button("Increment")) {
+            gui.button("Increment");
+            if (gui.wasClicked("Increment")) {
                 this.count++;
             }
 
@@ -1398,7 +1435,8 @@ class Counter {
                 this.items.forEach((item, i) => {
                     gui.scope(i, () => {
                         gui.text(item.name);
-                        if (gui.button("Delete")) {
+                        gui.button("Delete");
+                        if (gui.wasClicked("Delete")) {
                             this.items.splice(i, 1);
                         }
                     });

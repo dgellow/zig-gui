@@ -420,12 +420,12 @@ void zgl_gui_pop_id(ZglGui* gui);
  * Declare a widget.
  * Widget ID = current_scope XOR id. Creates widget if new,
  * updates if existing, marks as "seen" this frame.
+ * Use zgl_gui_clicked() etc. to query interaction state.
  * @param gui GUI context
  * @param id Widget ID
  * @param style Widget style
- * @return true if this is a new widget (first frame)
  */
-bool zgl_gui_widget(ZglGui* gui, ZglId id, const ZglStyle* style);
+void zgl_gui_widget(ZglGui* gui, ZglId id, const ZglStyle* style);
 
 /**
  * Begin a container widget.
