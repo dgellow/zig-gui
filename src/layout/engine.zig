@@ -7,8 +7,19 @@
 //! - Real flexbox algorithm
 //!
 //! This is the COMPLETE layout engine that will enable honest benchmarks.
+//!
+//! ## Embedded Configuration
+//!
+//! For embedded systems with limited RAM, configure at build time:
+//!   zig build -Dmax_layout_elements=64
+//!
+//! Memory usage scales with max_layout_elements:
+//!   - 64 elements:  ~9KB (fits in 32KB embedded)
+//!   - 256 elements: ~36KB
+//!   - 4096 elements (default): ~580KB
 
 const std = @import("std");
+const build_options = @import("build_options");
 const flexbox = @import("flexbox.zig");
 const cache = @import("cache.zig");
 const dirty_tracking = @import("dirty_tracking.zig");
@@ -23,7 +34,8 @@ const CacheStats = cache.CacheStats;
 const DirtyQueue = dirty_tracking.DirtyQueue;
 
 /// Maximum number of elements in the layout tree
-pub const MAX_ELEMENTS = 4096;
+/// Configurable via build option: -Dmax_layout_elements=N
+pub const MAX_ELEMENTS: u32 = build_options.max_layout_elements;
 
 /// Element in the layout tree (Structure-of-Arrays layout for cache efficiency)
 pub const LayoutEngine = struct {

@@ -7,9 +7,14 @@ pub fn build(b: *std.Build) void {
     // Profiling build option: -Denable_profiling=true
     const enable_profiling = b.option(bool, "enable_profiling", "Enable profiling and tracing") orelse false;
 
+    // Embedded config: -Dmax_layout_elements=64 (default 4096)
+    // For embedded systems: use 64-256 elements to fit in <32KB RAM
+    const max_layout_elements = b.option(u32, "max_layout_elements", "Maximum layout elements (default 4096, embedded: 64-256)") orelse 4096;
+
     // Create build options module for compile-time configuration
     const build_options = b.addOptions();
     build_options.addOption(bool, "enable_profiling", enable_profiling);
+    build_options.addOption(u32, "max_layout_elements", max_layout_elements);
 
     // Create zig-gui module for examples to import
     // Note: zlay is now integrated into src/layout/ instead of separate module

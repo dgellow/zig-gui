@@ -35,6 +35,9 @@ extern "C" {
 /* Runtime version check */
 uint32_t zgl_get_version(void);
 
+/* Get maximum elements (configurable at build time for embedded) */
+uint32_t zgl_max_elements(void);
+
 /* Struct size checks for ABI compatibility */
 size_t zgl_style_size(void);
 size_t zgl_rect_size(void);

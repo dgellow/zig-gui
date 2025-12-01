@@ -108,6 +108,10 @@ pub export fn zgl_get_version() u32 {
     return (1 << 16) | 0; // Version 1.0
 }
 
+pub export fn zgl_max_elements() u32 {
+    return layout_engine.MAX_ELEMENTS;
+}
+
 pub export fn zgl_style_size() usize {
     return @sizeOf(ZglStyle);
 }

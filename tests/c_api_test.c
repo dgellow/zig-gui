@@ -605,13 +605,16 @@ TEST(many_nodes) {
 
     ZglNode root = zgl_layout_add(layout, ZGL_NULL, &style);
 
-    /* Add many children */
-    for (int i = 0; i < 100; i++) {
+    /* Add children up to capacity (respects embedded limits) */
+    uint32_t max_children = zgl_max_elements() - 2; /* Leave room for root and safety */
+    if (max_children > 100) max_children = 100;     /* Cap at 100 for test speed */
+
+    for (uint32_t i = 0; i < max_children; i++) {
         ZglNode child = zgl_layout_add(layout, root, &style);
         ASSERT(child != ZGL_NULL);
     }
 
-    ASSERT_EQ(zgl_layout_node_count(layout), 101);
+    ASSERT_EQ(zgl_layout_node_count(layout), max_children + 1);
 
     /* Should compute without crashing */
     zgl_layout_compute(layout, 800, 600);
