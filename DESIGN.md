@@ -743,152 +743,476 @@ try testing.expectEqual(1, state.counter.get());
 
 ---
 
-## C API
+## Public API
+
+The public API is designed to impress senior C engineers while working seamlessly across WASM, embedded, Python FFI, and Zig native.
+
+### Architecture: Three Layers
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: Language Bindings (Python, TypeScript, etc.)      │
+│  - Pythonic context managers, closures, generators          │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2: GUI Context (immediate-mode widgets)              │
+│  - Widget functions, input handling, rendering              │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1: Layout Engine (pure layout, no UI)                │
+│  - Flexbox computation, tree management                     │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 0: Style (data only, no functions)                   │
+│  - Plain C structs, serializable, versionable               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Use cases by layer:**
+- Game engine HUD: Layer 1 only (bring your own rendering)
+- Desktop app: Layer 2 (full immediate-mode GUI)
+- Python tool: Layer 3 (ergonomic bindings)
+- Custom widget library: Layer 1 + custom rendering
 
 ### Design Principles
 
-1. **Zero-overhead**: Direct mapping to Zig internals
-2. **Memory safety**: Clear ownership, no double-frees
-3. **Error handling**: Explicit error codes
-4. **Thread safety**: Well-defined threading model
-5. **ABI stability**: Versioned interface
+1. **u32 handles everywhere** - No pointers in API (WASM-friendly, stable ABI)
+2. **56-byte `ZglStyle`** - Cache-line aligned, trivially serializable
+3. **Sentinel values** - `ZGL_AUTO` / `ZGL_NONE` instead of optional types
+4. **Separate layers** - Use only what you need
+5. **~27 total functions** - Minimal surface area, maximum composability
 
-### Core Types
+---
+
+## Layer 0: Style (Data Structures)
+
+Plain C structs with no methods. Fully serializable. Stable ABI.
 
 ```c
-typedef struct ZigGuiPlatform ZigGuiPlatform;
-typedef struct ZigGuiApp ZigGuiApp;
-typedef struct ZigGuiPlatformInterface ZigGuiPlatformInterface;
+// ============================================================================
+// Core Types (ABI stable, versioned)
+// ============================================================================
 
-typedef enum {
-    ZIG_GUI_OK = 0,
-    ZIG_GUI_ERROR_OUT_OF_MEMORY = 1,
-    ZIG_GUI_ERROR_PLATFORM = 2,
-    ZIG_GUI_ERROR_INVALID_ARGUMENT = 3,
-} ZigGuiError;
+#define ZGL_API_VERSION 1
 
-typedef enum {
-    ZIG_GUI_EVENT_DRIVEN = 0,
-    ZIG_GUI_GAME_LOOP = 1,
-    ZIG_GUI_MINIMAL = 2,
-    ZIG_GUI_SERVER_SIDE = 3,
-} ZigGuiExecutionMode;
+// Opaque handle type - u32 for WASM compatibility
+typedef uint32_t ZglNode;
+typedef uint32_t ZglId;
+
+// Sentinel values
+#define ZGL_NULL  ((ZglNode)0xFFFFFFFF)
+#define ZGL_AUTO  (-1.0f)
+#define ZGL_NONE  (1e30f)
+
+// Result rectangle (16 bytes)
+typedef struct {
+    float x, y, width, height;
+} ZglRect;
+
+// ============================================================================
+// Style Structure (56 bytes, cache-line aligned)
+// ============================================================================
+
+typedef enum : uint8_t {
+    ZGL_ROW = 0,
+    ZGL_COLUMN = 1,
+} ZglDirection;
+
+typedef enum : uint8_t {
+    ZGL_JUSTIFY_START = 0,
+    ZGL_JUSTIFY_CENTER = 1,
+    ZGL_JUSTIFY_END = 2,
+    ZGL_JUSTIFY_SPACE_BETWEEN = 3,
+    ZGL_JUSTIFY_SPACE_AROUND = 4,
+    ZGL_JUSTIFY_SPACE_EVENLY = 5,
+} ZglJustify;
+
+typedef enum : uint8_t {
+    ZGL_ALIGN_START = 0,
+    ZGL_ALIGN_CENTER = 1,
+    ZGL_ALIGN_END = 2,
+    ZGL_ALIGN_STRETCH = 3,
+} ZglAlign;
+
+typedef struct {
+    // Flexbox properties (4 bytes)
+    ZglDirection direction;
+    ZglJustify justify;
+    ZglAlign align;
+    uint8_t _reserved;
+
+    // Flex item properties (8 bytes)
+    float flex_grow;
+    float flex_shrink;
+
+    // Dimensions (24 bytes)
+    float width;        // ZGL_AUTO = content-sized
+    float height;
+    float min_width;
+    float min_height;
+    float max_width;    // ZGL_NONE = no maximum
+    float max_height;
+
+    // Spacing (20 bytes)
+    float gap;
+    float padding_top;
+    float padding_right;
+    float padding_bottom;
+    float padding_left;
+} ZglStyle;
+
+// Default style initializer
+#define ZGL_STYLE_DEFAULT ((ZglStyle){ \
+    .direction = ZGL_COLUMN, \
+    .justify = ZGL_JUSTIFY_START, \
+    .align = ZGL_ALIGN_STRETCH, \
+    .flex_grow = 0.0f, \
+    .flex_shrink = 1.0f, \
+    .width = ZGL_AUTO, \
+    .height = ZGL_AUTO, \
+    .min_width = 0.0f, \
+    .min_height = 0.0f, \
+    .max_width = ZGL_NONE, \
+    .max_height = ZGL_NONE, \
+    .gap = 0.0f, \
+})
 ```
 
-### Lifecycle
+---
+
+## Layer 1: Layout Engine API
+
+Pure layout computation. No rendering, no input handling, no platform dependencies.
 
 ```c
-// Platform first (owns OS resources)
-ZigGuiPlatform* platform = zig_gui_sdl_platform_create(800, 600, "My App");
-ZigGuiPlatformInterface interface = zig_gui_platform_interface(platform);
+// ============================================================================
+// Layout Engine (~12 functions)
+// ============================================================================
 
-// App second (borrows platform)
-ZigGuiApp* app = zig_gui_app_create(interface, ZIG_GUI_EVENT_DRIVEN);
+// --- Lifecycle ---
+ZglLayout* zgl_layout_create(uint32_t max_nodes);
+void       zgl_layout_destroy(ZglLayout* layout);
 
-// Use...
-ZigGuiError err = zig_gui_app_run(app, my_ui_func, user_data);
+// --- Tree Building ---
+ZglNode zgl_layout_add(ZglLayout* layout, ZglNode parent, const ZglStyle* style);
+void    zgl_layout_remove(ZglLayout* layout, ZglNode node);
+void    zgl_layout_set_style(ZglLayout* layout, ZglNode node, const ZglStyle* style);
+void    zgl_layout_reparent(ZglLayout* layout, ZglNode node, ZglNode new_parent);
 
-// Destroy in reverse order
-zig_gui_app_destroy(app);
-zig_gui_platform_destroy(platform);
+// --- Computation ---
+void zgl_layout_compute(ZglLayout* layout, float width, float height);
+
+// --- Queries ---
+ZglRect zgl_layout_get_rect(const ZglLayout* layout, ZglNode node);
+ZglNode zgl_layout_get_parent(const ZglLayout* layout, ZglNode node);
+ZglNode zgl_layout_get_first_child(const ZglLayout* layout, ZglNode node);
+ZglNode zgl_layout_get_next_sibling(const ZglLayout* layout, ZglNode node);
+
+// --- Statistics ---
+uint32_t zgl_layout_node_count(const ZglLayout* layout);
+float    zgl_layout_cache_hit_rate(const ZglLayout* layout);
 ```
 
-### UI Functions
+### Layer 1 Example (Pure C, No Framework)
 
 ```c
-typedef void (*ZigGuiUIFunction)(ZigGuiContext* ctx, void* user_data);
+ZglLayout* layout = zgl_layout_create(256);
 
-void my_ui(ZigGuiContext* ctx, void* user_data) {
-    MyState* state = (MyState*)user_data;
+// Build a toolbar
+ZglStyle toolbar_style = ZGL_STYLE_DEFAULT;
+toolbar_style.direction = ZGL_ROW;
+toolbar_style.gap = 8.0f;
+toolbar_style.height = 48.0f;
 
-    zig_gui_text(ctx, "Counter: %d", state->counter);
+ZglNode toolbar = zgl_layout_add(layout, ZGL_NULL, &toolbar_style);
 
-    if (zig_gui_button(ctx, "Increment")) {
-        state->counter++;
-    }
-}
+ZglStyle btn_style = ZGL_STYLE_DEFAULT;
+btn_style.width = 100.0f;
+btn_style.height = 32.0f;
+
+ZglNode btn_file = zgl_layout_add(layout, toolbar, &btn_style);
+ZglNode btn_edit = zgl_layout_add(layout, toolbar, &btn_style);
+
+// Compute layout
+zgl_layout_compute(layout, 1920.0f, 1080.0f);
+
+// Query results
+ZglRect r = zgl_layout_get_rect(layout, btn_file);
+printf("File button at (%.0f, %.0f)\n", r.x, r.y);
+
+zgl_layout_destroy(layout);
 ```
 
-### ID System
+---
+
+## Layer 2: GUI Context API
+
+Immediate-mode widgets with automatic reconciliation.
 
 ```c
-// ID stack - for hierarchical scoping
-void zig_gui_push_id(ZigGuiContext* ctx, const char* id);
-void zig_gui_push_index(ZigGuiContext* ctx, size_t index);
-void zig_gui_pop_id(ZigGuiContext* ctx);
+// ============================================================================
+// GUI Context (~15 functions)
+// ============================================================================
 
-// Debug (debug builds only, no-op in release)
-const char* zig_gui_debug_id_path(ZigGuiContext* ctx);
-void zig_gui_debug_check_collisions(ZigGuiContext* ctx);
+// --- Lifecycle ---
+typedef struct {
+    uint32_t max_widgets;
+    float viewport_width;
+    float viewport_height;
+} ZglGuiConfig;
+
+ZglGui* zgl_gui_create(const ZglGuiConfig* config);
+void    zgl_gui_destroy(ZglGui* gui);
+
+// --- Frame Lifecycle ---
+void zgl_gui_begin_frame(ZglGui* gui);
+void zgl_gui_end_frame(ZglGui* gui);
+void zgl_gui_set_viewport(ZglGui* gui, float width, float height);
+
+// --- Widget ID System ---
+ZglId zgl_id(const char* label);
+ZglId zgl_id_index(const char* label, uint32_t index);
+ZglId zgl_id_combine(ZglId parent, ZglId child);
+
+void zgl_gui_push_id(ZglGui* gui, ZglId id);
+void zgl_gui_pop_id(ZglGui* gui);
+
+// --- Widget Declaration ---
+bool zgl_gui_widget(ZglGui* gui, ZglId id, const ZglStyle* style);
+void zgl_gui_begin(ZglGui* gui, ZglId id, const ZglStyle* style);
+void zgl_gui_end(ZglGui* gui);
+
+// --- Queries ---
+ZglRect zgl_gui_get_rect(const ZglGui* gui, ZglId id);
+bool    zgl_gui_hit_test(const ZglGui* gui, ZglId id, float x, float y);
+
+// --- Input State ---
+void zgl_gui_set_mouse(ZglGui* gui, float x, float y, bool down);
+bool zgl_gui_clicked(const ZglGui* gui, ZglId id);
+bool zgl_gui_hovered(const ZglGui* gui, ZglId id);
+
+// --- Direct Layout Access ---
+ZglLayout* zgl_gui_get_layout(ZglGui* gui);
 ```
 
-### Widgets
+### Layer 2 Example
 
 ```c
-// Text
-void zig_gui_text(ZigGuiContext* ctx, const char* fmt, ...);
+ZglGui* gui = zgl_gui_create(&(ZglGuiConfig){
+    .max_widgets = 1024,
+    .viewport_width = 800,
+    .viewport_height = 600,
+});
 
-// Buttons - label is used as ID (hashed at runtime)
-bool zig_gui_button(ZigGuiContext* ctx, const char* label);
+while (running) {
+    zgl_gui_set_mouse(gui, mouse_x, mouse_y, mouse_down);
+    zgl_gui_begin_frame(gui);
 
-// Buttons with explicit ID (when label differs from ID)
-bool zig_gui_button_id(ZigGuiContext* ctx, const char* id, const char* label);
+    // Toolbar
+    ZglStyle toolbar = { .direction = ZGL_ROW, .height = 48, .gap = 8 };
+    zgl_gui_begin(gui, zgl_id("toolbar"), &toolbar);
+    {
+        ZglStyle button = { .width = 80, .height = 32 };
 
-// Input
-bool zig_gui_text_input(ZigGuiContext* ctx, const char* label, char* buffer, size_t buffer_size);
-bool zig_gui_checkbox(ZigGuiContext* ctx, const char* label, bool* value);
-bool zig_gui_slider_float(ZigGuiContext* ctx, const char* label, float* value, float min, float max);
-
-// Layout containers
-void zig_gui_push_row(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
-void zig_gui_push_column(ZigGuiContext* ctx, const ZigGuiLayoutOptions* options);
-void zig_gui_pop_layout(ZigGuiContext* ctx);
-```
-
-### C Usage Example
-
-```c
-void settings_panel(ZigGuiContext* ctx, SettingsState* state) {
-    zig_gui_push_id(ctx, "settings");
-
-    zig_gui_text(ctx, "Settings");
-
-    if (zig_gui_button(ctx, "Save")) {
-        save_settings(state);
-    }
-
-    // Same label, different IDs
-    zig_gui_button_id(ctx, "reset_audio", "Reset");
-    zig_gui_button_id(ctx, "reset_video", "Reset");
-
-    // Loop with index-based IDs
-    for (size_t i = 0; i < state->item_count; i++) {
-        zig_gui_push_index(ctx, i);
-
-        zig_gui_text(ctx, state->items[i].name);
-        if (zig_gui_button(ctx, "Delete")) {
-            delete_item(state, i);
+        zgl_gui_widget(gui, zgl_id("file"), &button);
+        if (zgl_gui_clicked(gui, zgl_id("file"))) {
+            open_file_menu();
         }
 
-        zig_gui_pop_id(ctx);
+        zgl_gui_widget(gui, zgl_id("edit"), &button);
+        zgl_gui_widget(gui, zgl_id("view"), &button);
     }
+    zgl_gui_end(gui);
 
-    zig_gui_pop_id(ctx);
+    // Dynamic list
+    zgl_gui_begin(gui, zgl_id("content"), &ZGL_STYLE_DEFAULT);
+    {
+        for (int i = 0; i < item_count; i++) {
+            ZglId item_id = zgl_id_index("item", i);
+            zgl_gui_widget(gui, item_id, &item_style);
+
+            if (zgl_gui_clicked(gui, item_id)) {
+                select_item(i);
+            }
+        }
+    }
+    zgl_gui_end(gui);
+
+    zgl_gui_end_frame(gui);
+    render(gui);
+}
+
+zgl_gui_destroy(gui);
+```
+
+---
+
+## Platform-Specific Optimizations
+
+### Zig Native
+
+Zero-cost comptime hashing:
+
+```zig
+pub fn main() !void {
+    var gui = try zgl.Gui.init(.{});
+    defer gui.deinit();
+
+    while (running) {
+        gui.beginFrame();
+        defer gui.endFrame();
+
+        // Comptime ID hashing - zero runtime cost
+        gui.begin("toolbar", .{ .direction = .row, .height = 48 });
+        defer gui.end();
+
+        if (gui.widget("file", .{ .width = 80 }).clicked()) {
+            try openFileMenu();
+        }
+
+        for (items, 0..) |_, i| {
+            if (gui.widget("item", i, .{ .height = 40 }).clicked()) {
+                selectItem(i);
+            }
+        }
+    }
 }
 ```
 
-### State Management
+### WebAssembly
+
+Pre-computed IDs at build time:
+
+```typescript
+// Build-time: Generate ID constants
+const IDS = {
+    toolbar: hash("toolbar"),  // Computed at build time
+    file: hash("file"),
+};
+
+// Runtime: Just pass u32 IDs
+function render() {
+    gui.beginFrame();
+    gui.begin(IDS.toolbar, TOOLBAR_STYLE);
+    gui.widget(IDS.file, BUTTON_STYLE);
+    gui.end();
+    gui.endFrame();
+}
+```
+
+### Python FFI
+
+Context managers for ergonomic API:
+
+```python
+gui = zgl.Gui(max_widgets=1024)
+
+while running:
+    gui.set_mouse(mouse_x, mouse_y, mouse_down)
+
+    with gui.frame():
+        with gui.container("toolbar", direction="row", height=48):
+            if gui.widget("file", width=80, height=32).clicked:
+                open_file_menu()
+
+        with gui.container("content"):
+            for i, item in enumerate(items):
+                if gui.widget(f"item_{i}", height=40).clicked:
+                    select_item(i)
+```
+
+### Embedded (32KB RAM)
+
+Stack allocation, no heap in hot path:
 
 ```c
-// Type-safe accessors
-void zig_gui_state_set_int(ZigGuiState* state, const char* key, int32_t value);
-int32_t zig_gui_state_get_int(ZigGuiState* state, const char* key, int32_t default_value);
+// Compile with: -DZGL_MAX_NODES=64
 
-void zig_gui_state_set_float(ZigGuiState* state, const char* key, float value);
-float zig_gui_state_get_float(ZigGuiState* state, const char* key, float default_value);
+ZglLayoutEmbedded layout_storage;
+ZglLayout* layout = zgl_layout_init_embedded(&layout_storage);
 
-void zig_gui_state_set_string(ZigGuiState* state, const char* key, const char* value);
-const char* zig_gui_state_get_string(ZigGuiState* state, const char* key, const char* default_value);
+// All operations use fixed-size arrays
+ZglNode root = zgl_layout_add(layout, ZGL_NULL, &root_style);
+zgl_layout_compute(layout, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+ZglRect r = zgl_layout_get_rect(layout, root);
+draw_to_framebuffer(r);
+```
+
+---
+
+## Memory Model
+
+### Ownership Rules
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Your Application                        │
+│  - Owns: ZglGui*, ZglLayout* handles                       │
+│  - Owns: Style structs (stack or heap, your choice)         │
+│  - Borrows: ZglRect results (valid until next compute)      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     zgl Library                             │
+│  - Owns: Internal node arrays, hash maps, free lists        │
+│  - Allocates: Once at create(), frees at destroy()          │
+│  - Hot path: Zero allocations                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Memory Budget
+
+| Platform | Max Nodes | Per-Node | Total |
+|----------|-----------|----------|-------|
+| Embedded | 64 | 80 B | 5 KB |
+| Mobile | 1024 | 180 B | 180 KB |
+| Desktop | 4096 | 200 B | 800 KB |
+
+---
+
+## Error Handling
+
+```c
+typedef enum {
+    ZGL_OK = 0,
+    ZGL_ERROR_OUT_OF_MEMORY = 1,
+    ZGL_ERROR_CAPACITY_EXCEEDED = 2,
+    ZGL_ERROR_INVALID_NODE = 3,
+} ZglError;
+
+// Get last error
+ZglError zgl_get_last_error(void);
+
+// Checked version returns error code
+ZglError zgl_layout_add_checked(ZglLayout* layout, ZglNode parent,
+                                 const ZglStyle* style, ZglNode* out_node);
+```
+
+---
+
+## Thread Safety
+
+```
+SINGLE-THREADED: ZglGui, ZglLayout
+  - All API calls must be from the same thread
+
+THREAD-SAFE: zgl_id(), zgl_id_index(), zgl_id_combine()
+  - Pure functions, no shared state
+  - Can pre-compute IDs on any thread
+
+IMMUTABLE: ZglStyle, ZglRect
+  - Plain data, copy freely between threads
+```
+
+---
+
+## ABI Versioning
+
+```c
+#define ZGL_API_VERSION_MAJOR 1
+#define ZGL_API_VERSION_MINOR 0
+
+uint32_t zgl_get_version(void);    // Runtime version check
+size_t   zgl_style_size(void);     // Struct size for compatibility
 ```
 
 ---
