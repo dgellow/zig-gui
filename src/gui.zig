@@ -124,8 +124,6 @@ pub const GUI = struct {
     im_hot_id: u64 = 0, // Widget currently under mouse
     im_active_id: u64 = 0, // Widget being interacted with
 
-    /// ID generation (legacy - kept for compatibility)
-    im_id_counter: u64 = 0,
 
     /// Text formatting buffer (for fmt args)
     im_text_buffer: [1024]u8 = undefined,
@@ -250,9 +248,6 @@ pub const GUI = struct {
         // Reset immediate-mode cursor
         self.im_cursor_x = self.im_padding;
         self.im_cursor_y = self.im_padding;
-
-        // Reset ID counter for this frame
-        self.im_id_counter = 0;
 
         // Clear hot ID (will be set during rendering)
         self.im_hot_id = 0;
@@ -482,17 +477,109 @@ pub const GUI = struct {
     }
 
     // =========================================================================
-    // Immediate-Mode UI API
+    // Container API (design-aligned: auto ID scope push)
     // =========================================================================
 
-    /// Generate a unique ID for a widget based on label (legacy)
-    fn generateId(self: *GUI, label: []const u8) u64 {
-        var hasher = std.hash.Wyhash.init(0);
-        hasher.update(label);
-        hasher.update(std.mem.asBytes(&self.im_id_counter));
-        self.im_id_counter += 1;
-        return hasher.final();
+    /// Begin a container with comptime label - auto-pushes ID scope
+    /// Children inherit this container's scope automatically.
+    ///
+    /// Example:
+    /// ```zig
+    /// gui.begin("toolbar", .{ .direction = .row });
+    /// defer gui.end();
+    /// if (gui.button("file")) { ... }  // ID: toolbar ^ file
+    /// ```
+    pub fn begin(self: *GUI, comptime label: []const u8, style: FlexStyle) void {
+        self.beginCore(comptime WidgetId.from(label).hash, style);
     }
+
+    /// Begin a container with index - for loops
+    ///
+    /// Example:
+    /// ```zig
+    /// for (items, 0..) |item, i| {
+    ///     gui.beginIndexed("item", i, .{ .height = 40 });
+    ///     defer gui.end();
+    ///     // ...
+    /// }
+    /// ```
+    pub fn beginIndexed(self: *GUI, comptime label: []const u8, index: usize, style: FlexStyle) void {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        self.beginCore(indexed_hash, style);
+    }
+
+    /// Begin a container with runtime string - for dynamic content
+    pub fn beginDynamic(self: *GUI, label: []const u8, style: FlexStyle) void {
+        self.beginCore(WidgetId.runtime(label).hash, style);
+    }
+
+    /// Begin a container with pre-computed ID - for C API interop
+    pub fn beginById(self: *GUI, id: u32, style: FlexStyle) void {
+        self.beginCore(id, style);
+    }
+
+    /// Core container begin - takes pre-computed hash
+    fn beginCore(self: *GUI, id_hash: u32, style: FlexStyle) void {
+        // Combine with current scope
+        const final_id = self.id_stack.combine(id_hash);
+
+        // Create/update layout element
+        const layout_idx = self.getOrCreateElement(final_id, .container, style) catch return;
+
+        // Push ID scope (so children inherit this container's scope)
+        self.id_stack.pushHash(id_hash);
+
+        // Push as current parent (so children are laid out inside this container)
+        self.parent_stack.append(layout_idx) catch return;
+    }
+
+    /// End a container - pops ID scope and parent stack
+    pub fn end(self: *GUI) void {
+        // Pop parent stack
+        if (self.parent_stack.len > 0) {
+            self.parent_stack.len -= 1;
+        }
+
+        // Pop ID scope
+        self.id_stack.pop();
+    }
+
+    // =========================================================================
+    // Widget API (design-aligned: comptime labels with variants)
+    // =========================================================================
+
+    /// Create a widget with comptime label - zero runtime cost
+    pub fn widget(self: *GUI, comptime label: []const u8, style: FlexStyle) !void {
+        return self.widgetCore(comptime WidgetId.from(label).hash, style);
+    }
+
+    /// Create a widget with index - for loops
+    pub fn widgetIndexed(self: *GUI, comptime label: []const u8, index: usize, style: FlexStyle) !void {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        return self.widgetCore(indexed_hash, style);
+    }
+
+    /// Create a widget with runtime string - for dynamic content
+    pub fn widgetDynamic(self: *GUI, label: []const u8, style: FlexStyle) !void {
+        return self.widgetCore(WidgetId.runtime(label).hash, style);
+    }
+
+    /// Create a widget with pre-computed ID - for C API interop
+    pub fn widgetById(self: *GUI, id: u32, style: FlexStyle) !void {
+        return self.widgetCore(id, style);
+    }
+
+    /// Core widget creation - takes pre-computed hash
+    fn widgetCore(self: *GUI, id_hash: u32, style: FlexStyle) !void {
+        const final_id = self.id_stack.combine(id_hash);
+        _ = try self.getOrCreateElement(final_id, .container, style);
+    }
+
+    // =========================================================================
+    // Immediate-Mode Rendering Helpers
+    // =========================================================================
 
     /// Check if a point is inside a rectangle
     fn pointInRect(x: f32, y: f32, rect: Rect) bool {
@@ -563,20 +650,43 @@ pub const GUI = struct {
         }
     }
 
-    /// Create a button and return if clicked
+    /// Create a button with comptime label and return if clicked
     ///
     /// Example:
     /// ```zig
-    /// if (try gui.button("Click me")) {
+    /// if (gui.button("Click me")) {
     ///     state.counter.set(state.counter.get() + 1);
     /// }
     /// ```
-    pub fn button(self: *GUI, label: []const u8) !bool {
-        const id = self.generateId(label);
+    pub fn button(self: *GUI, comptime label: []const u8) bool {
+        return self.buttonCore(comptime WidgetId.from(label).hash, label);
+    }
+
+    /// Create a button with index - for loops
+    pub fn buttonIndexed(self: *GUI, comptime label: []const u8, index: usize) bool {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        return self.buttonCore(indexed_hash, label);
+    }
+
+    /// Create a button with runtime string - for dynamic content
+    pub fn buttonDynamic(self: *GUI, label: []const u8) bool {
+        return self.buttonCore(WidgetId.runtime(label).hash, label);
+    }
+
+    /// Create a button with pre-computed ID - for C API interop
+    pub fn buttonById(self: *GUI, id: u32, display_label: []const u8) bool {
+        return self.buttonCore(id, display_label);
+    }
+
+    /// Core button implementation - takes pre-computed hash
+    fn buttonCore(self: *GUI, id_hash: u32, display_label: []const u8) bool {
+        // Combine with current ID scope
+        const final_id: u64 = self.id_stack.combine(id_hash);
 
         // Calculate button dimensions
         const char_width: f32 = 8;
-        const text_width = @as(f32, @floatFromInt(label.len)) * char_width;
+        const text_width = @as(f32, @floatFromInt(display_label.len)) * char_width;
         const button_width = text_width + self.im_padding * 2;
         const button_height = self.im_line_height + self.im_padding;
 
@@ -590,16 +700,16 @@ pub const GUI = struct {
         // Check if mouse is over button
         const is_hot = pointInRect(self.im_mouse_x, self.im_mouse_y, rect);
         if (is_hot) {
-            self.im_hot_id = id;
+            self.im_hot_id = final_id;
         }
 
         // Handle interaction
         var clicked = false;
-        const is_active = self.im_active_id == id;
+        const is_active = self.im_active_id == final_id;
 
         if (is_hot) {
             if (self.mousePressed()) {
-                self.im_active_id = id;
+                self.im_active_id = final_id;
             }
         }
 
@@ -630,7 +740,7 @@ pub const GUI = struct {
                 .color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 },
             };
 
-            renderer.vtable.drawText(renderer, label, text_position, text_paint);
+            renderer.vtable.drawText(renderer, display_label, text_position, text_paint);
         }
 
         // Advance cursor
@@ -645,9 +755,21 @@ pub const GUI = struct {
         return clicked;
     }
 
-    /// Create a checkbox
-    pub fn checkbox(self: *GUI, checked: bool) !bool {
-        const id = self.generateId("checkbox");
+    /// Create a checkbox with comptime label
+    pub fn checkbox(self: *GUI, comptime label: []const u8, checked: bool) bool {
+        return self.checkboxCore(comptime WidgetId.from(label).hash, checked);
+    }
+
+    /// Create a checkbox with index - for loops
+    pub fn checkboxIndexed(self: *GUI, comptime label: []const u8, index: usize, checked: bool) bool {
+        const base_hash = comptime WidgetId.from(label).hash;
+        const indexed_hash = base_hash ^ (@as(u32, @truncate(index)) +% 1) *% 0x9e3779b9;
+        return self.checkboxCore(indexed_hash, checked);
+    }
+
+    /// Core checkbox implementation
+    fn checkboxCore(self: *GUI, id_hash: u32, checked: bool) bool {
+        const final_id: u64 = self.id_stack.combine(id_hash);
 
         const size: f32 = 20;
         const rect = Rect{
@@ -660,16 +782,16 @@ pub const GUI = struct {
         // Check if mouse is over checkbox
         const is_hot = pointInRect(self.im_mouse_x, self.im_mouse_y, rect);
         if (is_hot) {
-            self.im_hot_id = id;
+            self.im_hot_id = final_id;
         }
 
         // Handle interaction
         var toggled = false;
-        const is_active = self.im_active_id == id;
+        const is_active = self.im_active_id == final_id;
 
         if (is_hot) {
             if (self.mousePressed()) {
-                self.im_active_id = id;
+                self.im_active_id = final_id;
             }
         }
 
@@ -732,7 +854,7 @@ pub const GUI = struct {
         max_length: usize = 256,
     };
 
-    /// Create a text input field
+    /// Create a text input field with comptime label
     /// Returns true if the input is focused (clicked)
     ///
     /// Note: Full keyboard input requires keyboard event handling (not yet implemented)
@@ -741,14 +863,19 @@ pub const GUI = struct {
     /// Example:
     /// ```zig
     /// var buffer: [256]u8 = undefined;
-    /// const focused = try gui.textInput(&buffer, state.text.get(), .{});
+    /// const focused = gui.textInput("my_input", &buffer, state.text.get(), .{});
     /// if (focused) {
     ///     // Handle keyboard input when event system supports it
     /// }
     /// ```
-    pub fn textInput(self: *GUI, buffer: []u8, current_text: []const u8, config: TextInputConfig) !bool {
+    pub fn textInput(self: *GUI, comptime label: []const u8, buffer: []u8, current_text: []const u8, config: TextInputConfig) bool {
+        return self.textInputCore(comptime WidgetId.from(label).hash, buffer, current_text, config);
+    }
+
+    /// Core text input implementation
+    fn textInputCore(self: *GUI, id_hash: u32, buffer: []u8, current_text: []const u8, config: TextInputConfig) bool {
         _ = buffer;
-        const id = self.generateId("textinput");
+        const id: u64 = self.id_stack.combine(id_hash);
 
         const input_width = config.width;
         const input_height = self.im_line_height + self.im_padding;
@@ -914,19 +1041,6 @@ pub const GUI = struct {
 // Tests
 // ============================================================================
 
-test "GUI immediate-mode ID generation" {
-    // Test that IDs are unique for different labels
-    const gui = try GUI.init(std.testing.allocator, .{});
-    defer gui.deinit();
-
-    const id1 = gui.generateId("button1");
-    const id2 = gui.generateId("button2");
-    const id3 = gui.generateId("button1"); // Same label, different counter
-
-    try std.testing.expect(id1 != id2);
-    try std.testing.expect(id1 != id3); // Different because counter advanced
-}
-
 test "GUI point in rect" {
     const rect = Rect{ .x = 10, .y = 10, .width = 100, .height = 50 };
 
@@ -939,14 +1053,14 @@ test "GUI point in rect" {
     try std.testing.expect(!GUI.pointInRect(50, 100, rect));
 }
 
-test "GUI button interaction" {
+test "GUI button with comptime label" {
     const gui = try GUI.init(std.testing.allocator, .{});
     defer gui.deinit();
 
     try gui.beginFrame();
 
     // Initially, no button is clicked
-    const clicked1 = try gui.button("Test Button");
+    const clicked1 = gui.button("Test Button");
     try std.testing.expect(!clicked1);
 
     // Simulate mouse over button (approximate position)
@@ -954,7 +1068,7 @@ test "GUI button interaction" {
 
     // Mouse down - button should not click yet
     gui.setMouseButton(true);
-    const clicked2 = try gui.button("Test Button");
+    const clicked2 = gui.button("Test Button");
     try std.testing.expect(!clicked2);
 
     // Mouse up - button should click
@@ -982,21 +1096,42 @@ test "GUI text rendering" {
     try gui.endFrame();
 }
 
-test "GUI checkbox toggling" {
+test "GUI checkbox with comptime label" {
     const gui = try GUI.init(std.testing.allocator, .{});
     defer gui.deinit();
 
     try gui.beginFrame();
 
     // Initially unchecked, not toggled
-    const toggled1 = try gui.checkbox(false);
+    const toggled1 = gui.checkbox("my_checkbox", false);
     try std.testing.expect(!toggled1);
 
     // Simulate click on checkbox
     gui.setMousePosition(10, 10); // Approximate checkbox position
     gui.setMouseButton(true);
-    const toggled2 = try gui.checkbox(false);
+    const toggled2 = gui.checkbox("my_checkbox", false);
     try std.testing.expect(!toggled2); // Not toggled yet (mouse still down)
+
+    try gui.endFrame();
+}
+
+test "GUI begin/end container scoping" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    // Begin a container - should auto-push ID scope
+    gui.begin("toolbar", .{ .direction = .row });
+
+    // ID stack should have depth 1 (root + toolbar)
+    try std.testing.expect(gui.id_stack.getDepth() == 1);
+
+    // End container - should pop ID scope
+    gui.end();
+
+    // ID stack should be back to 0
+    try std.testing.expect(gui.id_stack.getDepth() == 0);
 
     try gui.endFrame();
 }
@@ -1032,7 +1167,7 @@ test "GUI row layout" {
     // Add widgets horizontally
     try gui.text("Label:", .{});
     const button_x = gui.im_cursor_x;
-    _ = try gui.button("Click");
+    _ = gui.button("Click");
     const after_button_x = gui.im_cursor_x;
 
     // Button should be positioned after label
@@ -1055,13 +1190,13 @@ test "GUI text input focus" {
     var buffer: [256]u8 = undefined;
 
     // Initially not focused
-    const focused1 = try gui.textInput(&buffer, "Hello", .{});
+    const focused1 = gui.textInput("my_input", &buffer, "Hello", .{});
     try std.testing.expect(!focused1);
 
     // Click on text input (approximate position)
     gui.setMousePosition(100, 12);
     gui.setMouseButton(true);
-    _ = try gui.textInput(&buffer, "Hello", .{});
+    _ = gui.textInput("my_input", &buffer, "Hello", .{});
 
     // Release mouse - should become focused
     gui.setMouseButton(false);
