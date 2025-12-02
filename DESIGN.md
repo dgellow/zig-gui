@@ -435,10 +435,10 @@ Overhead:       68 bytes  (vs 32KB budget = 0.2%)
 ## Layout Engine
 
 The layout engine implements flexbox layout with these characteristics:
-- O(n) complexity
+- O(n) complexity for full layout, O(d) for incremental (d = dirty nodes)
 - SIMD-optimized constraint clamping
-- Dirty tracking for incremental updates
-- 176 bytes per element
+- Two-pass dirty tracking for incremental updates
+- ~144 bytes per element (SoA layout for cache efficiency)
 
 ### API
 
@@ -515,9 +515,55 @@ pub fn container(self: *GUI, comptime label: []const u8, style: FlexStyle) !void
 }
 ```
 
-### Dirty Tracking
+### Dirty Tracking: Two-Pass Algorithm
+
+The layout engine uses a **two-pass dirty bit** algorithm for incremental updates:
+
+**Pass 1 - Bottom-up marking** (when style changes):
+```
+markDirty(node):
+    dirty[node] = true
+    current = node.parent
+    while current != null:
+        if dirty[current]: break        // Already marked, ancestors are too
+        dirty[current] = true
+        if isFixedSize(current): break  // Fixed size won't affect parent layout
+        current = current.parent
+```
+
+**Pass 2 - Top-down computation** (when computing layout):
+```
+computeLayout(root, width, height):
+    if not dirty[root]: return          // Nothing to do
+    computeNode(root, width, height)
+
+computeNode(node, w, h):
+    old_child_sizes = captureChildSizes(node)
+    layoutChildren(node, w, h)          // Flexbox: position all children
+
+    for child in children:
+        size_changed = (child.size != old_child_sizes[child])
+        if dirty[child] OR size_changed:
+            if child.isContainer:
+                computeNode(child, child.width, child.height)
+        dirty[child] = false
+
+    dirty[node] = false
+```
+
+**Key behaviors:**
+- Marking stops at fixed-size ancestors (they won't change size, so parent layout unaffected)
+- Computation recurses only into dirty subtrees OR children whose size changed
+- Size-change detection handles cascading: parent resize → child resize → grandchild resize
+
+**Why two-pass over spineless traversal?**
+
+We evaluated [Spineless Traversal](https://arxiv.org/html/2411.10659v8) which achieves 1.8x speedup in browser engines. However, it requires an order maintenance data structure to process nodes in correct dependency order, adding memory and complexity.
+
+For UI toolkit workloads (50-500 nodes vs browser's 10,000+), layout takes <1ms total. The traversal overhead that spineless eliminates is negligible when the tree fits in cache. Two-pass is simpler, uses less memory (important for 32KB embedded targets), and is sufficient for our performance goals.
 
 ```zig
+// API usage
 engine.markDirty(element_index);
 engine.setStyle(element_index, .{ .height = 100 }); // Auto-marks dirty
 ```
@@ -1563,7 +1609,7 @@ From `BENCHMARKS.md` (run with `zig build test`):
 
 ### Optimizations
 
-1. **Spineless Traversal**: Only process dirty elements
+1. **Two-Pass Dirty Tracking**: Only recompute dirty subtrees and size-changed children
 2. **SIMD Constraints**: Vectorized min/max clamping
 3. **Layout Caching**: Skip unchanged elements
 4. **SoA Layout**: Cache-friendly data structure

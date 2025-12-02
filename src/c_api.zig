@@ -312,7 +312,7 @@ pub export fn zgl_layout_node_count(layout_opt: ?*const ZglLayout) u32 {
 pub export fn zgl_layout_dirty_count(layout_opt: ?*const ZglLayout) u32 {
     const layout = layout_opt orelse return 0;
     const engine = layout.toPtrConst();
-    return @intCast(engine.dirty_queue.getDirtySlice().len);
+    return @intCast(engine.dirty_bits.dirtyCount());
 }
 
 pub export fn zgl_layout_cache_hit_rate(layout_opt: ?*const ZglLayout) f32 {

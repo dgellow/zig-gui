@@ -1,5 +1,8 @@
 # zig-gui
 
+> **Warning**
+> This is an experimental research project. It is not ready for production use and will have frequent breaking changes. Use at your own risk.
+
 A high-performance UI library for Zig combining event-driven execution, immediate-mode API, and universal targeting.
 
 <p align="center">
