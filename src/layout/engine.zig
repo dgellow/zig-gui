@@ -733,13 +733,16 @@ test "LayoutEngine: free list reuse" {
     try std.testing.expectEqual(@as(usize, 0), engine.free_list.len);
 }
 
-test "LayoutEngine: cache hit on unchanged leaf" {
+test "LayoutEngine: cache hit on root-level leaf" {
+    // NOTE: Only root-level leaves use computeLeafLayout and its cache.
+    // Nested leaves are computed by flexbox (different algorithm that
+    // accounts for flex-grow, flex-shrink, available space, etc.)
     var engine = try LayoutEngine.init(std.testing.allocator);
     defer engine.deinit();
 
     engine.beginFrame();
 
-    // Create a single leaf element (no children)
+    // Create a single leaf element at root (no parent container)
     const leaf = try engine.addElement(null, .{
         .width = 100,
         .height = 50,
@@ -789,6 +792,39 @@ test "LayoutEngine: cache hit on unchanged container" {
 
     const stats2 = engine.getCacheStats();
     try std.testing.expect(stats2.hits > 0); // Container cache hit
+}
+
+test "LayoutEngine: nested leaves computed by flexbox not computeLeafLayout" {
+    // Nested leaves are computed by flexbox, which correctly handles
+    // flex-grow, flex-shrink, and available space. This is different from
+    // computeLeafLayout which just uses explicit/min sizes.
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    const root = try engine.addElement(null, .{
+        .direction = .column,
+        .width = 400,
+        .height = 600,
+        .align_items = .stretch, // Stretch children on cross-axis
+    });
+
+    // Leaf with flex_grow = 1 and no explicit height
+    // computeLeafLayout would give height = min_height = 0
+    // Flexbox correctly stretches it to fill container
+    const leaf = try engine.addElement(root, .{
+        .flex_grow = 1,
+        // width and height are both -1 (auto)
+    });
+
+    try engine.computeLayout(400, 600);
+
+    const leaf_rect = engine.getRect(leaf);
+    // Flexbox stretched the leaf to fill the 600px container (main axis)
+    try std.testing.expectEqual(@as(f32, 600), leaf_rect.height);
+    // Width stretched to container width (cross axis, align_items = stretch)
+    try std.testing.expectEqual(@as(f32, 400), leaf_rect.width);
 }
 
 test "LayoutEngine: epsilon size comparison" {
