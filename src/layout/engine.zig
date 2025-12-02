@@ -54,6 +54,23 @@ pub const MAX_ELEMENTS: u32 = build_options.max_layout_elements;
 /// Null index sentinel
 const NULL_INDEX: u32 = 0xFFFFFFFF;
 
+/// Stack buffer size for small child counts (avoids heap allocation)
+const STACK_CHILDREN_MAX: usize = 32;
+
+/// Epsilon for float comparison in size change detection
+const SIZE_EPSILON: f32 = 0.001;
+
+/// Check if a style represents a fixed-size element (both dimensions explicit)
+fn isFixedSize(style: FlexStyle) bool {
+    return style.width >= 0 and style.height >= 0;
+}
+
+/// Check if two sizes are approximately equal (within epsilon)
+fn sizesApproxEqual(a: Size, b: Size) bool {
+    return @abs(a.width - b.width) < SIZE_EPSILON and
+        @abs(a.height - b.height) < SIZE_EPSILON;
+}
+
 /// Layout engine with two-pass dirty tracking
 pub const LayoutEngine = struct {
     allocator: std.mem.Allocator,
@@ -237,18 +254,10 @@ pub const LayoutEngine = struct {
             self.dirty_bits.markDirty(current);
 
             // Fixed-size container? Won't affect parent layout, stop here
-            const style = self.flex_styles[current];
-            if (self.isFixedSize(style)) break;
+            if (isFixedSize(self.flex_styles[current])) break;
 
             current = self.parent[current];
         }
-    }
-
-    /// Check if a style represents a fixed-size element
-    fn isFixedSize(self: *const LayoutEngine, style: FlexStyle) bool {
-        _ = self;
-        // Fixed if both dimensions are explicitly set (not auto)
-        return style.width >= 0 and style.height >= 0;
     }
 
     /// Update element style (marks dirty with proper propagation)
@@ -277,10 +286,7 @@ pub const LayoutEngine = struct {
 
     /// Compute layout for a node and recurse into dirty/size-changed children
     fn computeNode(self: *LayoutEngine, index: u32, available_width: f32, available_height: f32) std.mem.Allocator.Error!void {
-        const style = self.flex_styles[index];
-        const child_count = self.child_count[index];
-
-        if (child_count == 0) {
+        if (self.child_count[index] == 0) {
             // Leaf element - compute intrinsic size
             self.computeLeafLayout(index, available_width, available_height);
         } else {
@@ -290,8 +296,6 @@ pub const LayoutEngine = struct {
 
         // Clear dirty bit after processing
         self.dirty_bits.clearDirty(index);
-
-        _ = style;
     }
 
     /// Compute layout for a leaf element
@@ -326,44 +330,71 @@ pub const LayoutEngine = struct {
     fn computeContainerLayout(self: *LayoutEngine, index: u32, available_width: f32, available_height: f32) std.mem.Allocator.Error!void {
         const child_count = self.child_count[index];
         const style = self.flex_styles[index];
-
-        // Collect children indices
-        var children = try self.arena.allocator().alloc(u32, child_count);
-        defer self.arena.allocator().free(children);
-
-        var i: usize = 0;
-        var child = self.first_child[index];
-        while (child != NULL_INDEX) : (i += 1) {
-            children[i] = child;
-            child = self.next_sibling[child];
-        }
-
-        // Capture old sizes for change detection
-        var old_sizes = try self.arena.allocator().alloc(Size, child_count);
-        defer self.arena.allocator().free(old_sizes);
-
-        for (children, 0..) |child_index, j| {
-            old_sizes[j] = .{
-                .width = self.computed_rects[child_index].width,
-                .height = self.computed_rects[child_index].height,
-            };
-        }
-
-        // Collect children styles
-        var children_styles = try self.arena.allocator().alloc(FlexStyle, child_count);
-        defer self.arena.allocator().free(children_styles);
-
-        for (children, 0..) |child_index, j| {
-            children_styles[j] = self.flex_styles[child_index];
-        }
-
-        // Allocate results
-        const children_results = try self.arena.allocator().alloc(LayoutResult, child_count);
-        defer self.arena.allocator().free(children_results);
+        const style_version = self.style_versions[index];
 
         // Determine container dimensions
         const container_width = if (style.width >= 0) style.width else available_width;
         const container_height = if (style.height >= 0) style.height else available_height;
+
+        // Check cache first
+        const cached = &self.layout_cache[index];
+        if (cached.isValid(container_width, container_height, style_version)) {
+            self.cache_stats.recordHit();
+            const cached_size = cached.getSize();
+            self.computed_rects[index].width = cached_size.width;
+            self.computed_rects[index].height = cached_size.height;
+
+            // Even on cache hit, we must clear dirty bits for all descendants
+            self.clearDescendantDirtyBits(index);
+            return;
+        }
+
+        self.cache_stats.recordMiss();
+
+        // Use stack buffers for small child counts, heap for large
+        var children_stack: [STACK_CHILDREN_MAX]u32 = undefined;
+        var old_sizes_stack: [STACK_CHILDREN_MAX]Size = undefined;
+        var styles_stack: [STACK_CHILDREN_MAX]FlexStyle = undefined;
+        var results_stack: [STACK_CHILDREN_MAX]LayoutResult = undefined;
+
+        const use_heap = child_count > STACK_CHILDREN_MAX;
+
+        const children = if (use_heap)
+            try self.arena.allocator().alloc(u32, child_count)
+        else
+            children_stack[0..child_count];
+        defer if (use_heap) self.arena.allocator().free(children);
+
+        const old_sizes = if (use_heap)
+            try self.arena.allocator().alloc(Size, child_count)
+        else
+            old_sizes_stack[0..child_count];
+        defer if (use_heap) self.arena.allocator().free(old_sizes);
+
+        const children_styles = if (use_heap)
+            try self.arena.allocator().alloc(FlexStyle, child_count)
+        else
+            styles_stack[0..child_count];
+        defer if (use_heap) self.arena.allocator().free(children_styles);
+
+        const children_results = if (use_heap)
+            try self.arena.allocator().alloc(LayoutResult, child_count)
+        else
+            results_stack[0..child_count];
+        defer if (use_heap) self.arena.allocator().free(children_results);
+
+        // Collect children indices, old sizes, and styles in single pass
+        var i: usize = 0;
+        var child = self.first_child[index];
+        while (child != NULL_INDEX) : (i += 1) {
+            children[i] = child;
+            old_sizes[i] = .{
+                .width = self.computed_rects[child].width,
+                .height = self.computed_rects[child].height,
+            };
+            children_styles[i] = self.flex_styles[child];
+            child = self.next_sibling[child];
+        }
 
         // Compute flexbox layout
         try flexbox.computeFlexLayout(
@@ -401,14 +432,13 @@ pub const LayoutEngine = struct {
                 .width = self.computed_rects[child_index].width,
                 .height = self.computed_rects[child_index].height,
             };
-            const size_changed = (new_size.width != old_sizes[j].width or
-                new_size.height != old_sizes[j].height);
+            const size_changed = !sizesApproxEqual(new_size, old_sizes[j]);
 
             if (is_dirty or size_changed) {
                 try self.computeNode(child_index, new_size.width, new_size.height);
             } else {
-                // Not dirty and size didn't change - still need to clear dirty bit
-                self.dirty_bits.clearDirty(child_index);
+                // Not dirty and size didn't change - clear dirty bits recursively
+                self.clearDescendantDirtyBits(child_index);
             }
         }
 
@@ -416,24 +446,37 @@ pub const LayoutEngine = struct {
         const padding_h = style.padding_left + style.padding_right;
         const padding_v = style.padding_top + style.padding_bottom;
 
-        if (style.width >= 0) {
-            self.computed_rects[index].width = style.width;
-        } else {
+        const final_width = if (style.width >= 0) style.width else blk: {
             var max_x: f32 = 0;
             for (children_results) |result| {
                 max_x = @max(max_x, result.x + result.width);
             }
-            self.computed_rects[index].width = max_x + padding_h;
-        }
+            break :blk max_x + padding_h;
+        };
 
-        if (style.height >= 0) {
-            self.computed_rects[index].height = style.height;
-        } else {
+        const final_height = if (style.height >= 0) style.height else blk: {
             var max_y: f32 = 0;
             for (children_results) |result| {
                 max_y = @max(max_y, result.y + result.height);
             }
-            self.computed_rects[index].height = max_y + padding_v;
+            break :blk max_y + padding_v;
+        };
+
+        self.computed_rects[index].width = final_width;
+        self.computed_rects[index].height = final_height;
+
+        // Update cache
+        cached.update(container_width, container_height, style_version, final_width, final_height);
+    }
+
+    /// Clear dirty bits for a node and all its descendants
+    fn clearDescendantDirtyBits(self: *LayoutEngine, index: u32) void {
+        self.dirty_bits.clearDirty(index);
+
+        var child = self.first_child[index];
+        while (child != NULL_INDEX) {
+            self.clearDescendantDirtyBits(child);
+            child = self.next_sibling[child];
         }
     }
 
@@ -715,4 +758,90 @@ test "LayoutEngine: cache hit on unchanged leaf" {
 
     const stats2 = engine.getCacheStats();
     try std.testing.expect(stats2.hits > 0); // Second compute = hit
+}
+
+test "LayoutEngine: cache hit on unchanged container" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create container with children
+    const root = try engine.addElement(null, .{
+        .direction = .column,
+        .width = 400,
+        .height = 600,
+    });
+    _ = try engine.addElement(root, .{ .height = 50 });
+    _ = try engine.addElement(root, .{ .height = 30 });
+
+    // First compute - cache misses
+    engine.resetCacheStats();
+    try engine.computeLayout(400, 600);
+
+    const stats1 = engine.getCacheStats();
+    try std.testing.expect(stats1.misses > 0);
+
+    // Re-mark dirty and compute again with same constraints
+    engine.dirty_bits.markDirty(0); // Mark root dirty
+    engine.resetCacheStats();
+    try engine.computeLayout(400, 600);
+
+    const stats2 = engine.getCacheStats();
+    try std.testing.expect(stats2.hits > 0); // Container cache hit
+}
+
+test "LayoutEngine: epsilon size comparison" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create nested structure
+    const root = try engine.addElement(null, .{
+        .direction = .column,
+        .width = 400,
+        .height = 600,
+    });
+    const container = try engine.addElement(root, .{
+        .direction = .column,
+        .flex_grow = 1,
+    });
+    _ = try engine.addElement(container, .{ .flex_grow = 1 });
+
+    try engine.computeLayout(400, 600);
+
+    // Verify sizes are computed
+    const container_rect = engine.getRect(container);
+    try std.testing.expectEqual(@as(f32, 600), container_rect.height);
+}
+
+test "LayoutEngine: stack buffer for small child counts" {
+    var engine = try LayoutEngine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    engine.beginFrame();
+
+    // Create container with children (less than STACK_CHILDREN_MAX)
+    const root = try engine.addElement(null, .{
+        .direction = .column,
+        .width = 400,
+        .height = 600,
+    });
+
+    // Add 10 children (well under the 32 stack limit)
+    var expected_y: f32 = 0;
+    for (0..10) |_| {
+        _ = try engine.addElement(root, .{ .height = 20 });
+    }
+
+    try engine.computeLayout(400, 600);
+
+    // Verify children are laid out correctly
+    for (1..11) |i| {
+        const rect = engine.getRect(@intCast(i));
+        try std.testing.expectEqual(expected_y, rect.y);
+        try std.testing.expectEqual(@as(f32, 20), rect.height);
+        expected_y += 20;
+    }
 }
