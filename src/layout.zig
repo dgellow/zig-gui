@@ -21,7 +21,7 @@ pub const LayoutResult = @import("layout/flexbox.zig").LayoutResult;
 // Performance and debugging
 pub const CacheStats = @import("layout/cache.zig").CacheStats;
 pub const LayoutCacheEntry = @import("layout/cache.zig").LayoutCacheEntry;
-pub const DirtyQueue = @import("layout/dirty_tracking.zig").DirtyQueue;
+pub const DirtyBits = @import("layout/dirty_tracking.zig").DirtyBits;
 
 // Geometry types (from core)
 pub const Rect = @import("core/geometry.zig").Rect;
