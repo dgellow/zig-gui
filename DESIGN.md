@@ -840,6 +840,647 @@ pub fn reorderSiblings(self: *LayoutEngine, parent: u32, new_order: []const u32)
 
 ---
 
+## Draw System
+
+zig-gui uses a **Bring Your Own Renderer (BYOR)** architecture, inspired by Dear ImGui's backend system. The library outputs draw commands; the user implements rendering however they want.
+
+### Why BYOR?
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Built-in renderer | Zero setup | Bloated binary, limited customization |
+| Single backend abstraction | Consistent API | Leaky abstraction, LCD problem |
+| **BYOR (draw commands)** | **Maximum flexibility, minimal core** | **Requires backend implementation** |
+
+BYOR aligns with zig-gui's philosophy:
+- **Layered architecture**: Use what you need, bring what you have
+- **Embedded support**: 32KB targets can use software rasterizer
+- **Game engine integration**: Render with engine's existing pipeline
+- **Desktop apps**: Use GPU-accelerated backends (OpenGL, Vulkan, Metal)
+
+### Draw Pipeline
+
+```
+Widget Calls → Layout Compute → Draw Generation → Backend Render
+    │               │                │                  │
+    ▼               ▼                ▼                  ▼
+Store render   Flexbox          Generate          User-provided
+info (labels,  positions        DrawCommands      implementation
+colors, etc.)  computed         from widgets      renders to screen
+```
+
+**Key insight**: Widget functions store render info (labels, colors), but draw commands are generated **after** layout computation. This enables:
+- Correct clipping (need final positions)
+- Proper z-ordering (layer system)
+- Batched rendering (sort by texture, shader)
+
+### Draw Primitives
+
+```zig
+pub const DrawPrimitive = union(enum) {
+    /// Filled rectangle (backgrounds, buttons)
+    fill_rect: FillRect,
+
+    /// Stroked rectangle (borders, outlines)
+    stroke_rect: StrokeRect,
+
+    /// Text rendering
+    text: TextDraw,
+
+    /// Line segment
+    line: LineDraw,
+
+    /// Custom vertices (advanced: gradients, custom shapes)
+    vertices: VerticesDraw,
+
+    pub const FillRect = struct {
+        rect: Rect,
+        color: Color,
+        corner_radius: f32 = 0,
+    };
+
+    pub const StrokeRect = struct {
+        rect: Rect,
+        color: Color,
+        stroke_width: f32 = 1,
+        corner_radius: f32 = 0,
+    };
+
+    pub const TextDraw = struct {
+        position: Point,
+        text: []const u8,       // Pointer to string (lifetime: frame)
+        color: Color,
+        font_size: f32 = 14,
+        font_id: u16 = 0,       // Backend-specific font handle
+    };
+
+    pub const LineDraw = struct {
+        start: Point,
+        end: Point,
+        color: Color,
+        width: f32 = 1,
+    };
+
+    pub const VerticesDraw = struct {
+        vertices: []const Vertex,
+        indices: []const u16,
+        texture_id: u32 = 0,    // 0 = no texture
+    };
+
+    pub const Vertex = struct {
+        pos: [2]f32,
+        uv: [2]f32 = .{ 0, 0 },
+        color: [4]u8,           // RGBA
+    };
+};
+```
+
+### Draw Command
+
+```zig
+pub const DrawCommand = struct {
+    /// The primitive to draw
+    primitive: DrawPrimitive,
+
+    /// Clip rectangle (null = no clipping)
+    clip_rect: ?Rect = null,
+
+    /// Layer for z-ordering (higher = on top)
+    layer: u16 = 0,
+
+    /// Source widget ID (for debugging, hit testing)
+    widget_id: u32 = 0,
+};
+```
+
+### Draw List
+
+The `DrawList` accumulates commands during draw generation:
+
+```zig
+pub const DrawList = struct {
+    commands: std.ArrayList(DrawCommand),
+    allocator: std.mem.Allocator,
+
+    // State stacks for hierarchical rendering
+    clip_stack: std.BoundedArray(Rect, 16) = .{},
+    layer_stack: std.BoundedArray(u16, 16) = .{},
+
+    current_layer: u16 = 0,
+
+    pub fn init(allocator: std.mem.Allocator) DrawList {
+        return .{
+            .commands = std.ArrayList(DrawCommand).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *DrawList) void {
+        self.commands.deinit();
+    }
+
+    pub fn clear(self: *DrawList) void {
+        self.commands.clearRetainingCapacity();
+        self.clip_stack.len = 0;
+        self.layer_stack.len = 0;
+        self.current_layer = 0;
+    }
+
+    // === Drawing functions ===
+
+    pub fn addFilledRect(self: *DrawList, rect: Rect, color: Color) void {
+        self.addFilledRectEx(rect, color, 0);
+    }
+
+    pub fn addFilledRectEx(self: *DrawList, rect: Rect, color: Color, corner_radius: f32) void {
+        self.commands.append(.{
+            .primitive = .{ .fill_rect = .{
+                .rect = rect,
+                .color = color,
+                .corner_radius = corner_radius,
+            }},
+            .clip_rect = self.currentClip(),
+            .layer = self.current_layer,
+        }) catch {};
+    }
+
+    pub fn addStrokeRect(self: *DrawList, rect: Rect, color: Color, width: f32) void {
+        self.commands.append(.{
+            .primitive = .{ .stroke_rect = .{
+                .rect = rect,
+                .color = color,
+                .stroke_width = width,
+            }},
+            .clip_rect = self.currentClip(),
+            .layer = self.current_layer,
+        }) catch {};
+    }
+
+    pub fn addText(self: *DrawList, pos: Point, text: []const u8, color: Color) void {
+        self.commands.append(.{
+            .primitive = .{ .text = .{
+                .position = pos,
+                .text = text,
+                .color = color,
+            }},
+            .clip_rect = self.currentClip(),
+            .layer = self.current_layer,
+        }) catch {};
+    }
+
+    pub fn addLine(self: *DrawList, start: Point, end: Point, color: Color, width: f32) void {
+        self.commands.append(.{
+            .primitive = .{ .line = .{
+                .start = start,
+                .end = end,
+                .color = color,
+                .width = width,
+            }},
+            .clip_rect = self.currentClip(),
+            .layer = self.current_layer,
+        }) catch {};
+    }
+
+    // === Clip stack ===
+
+    pub fn pushClip(self: *DrawList, rect: Rect) void {
+        const clipped = if (self.currentClip()) |current|
+            rect.intersect(current)
+        else
+            rect;
+        self.clip_stack.append(clipped) catch {};
+    }
+
+    pub fn popClip(self: *DrawList) void {
+        _ = self.clip_stack.pop();
+    }
+
+    pub fn currentClip(self: *const DrawList) ?Rect {
+        if (self.clip_stack.len == 0) return null;
+        return self.clip_stack.buffer[self.clip_stack.len - 1];
+    }
+
+    // === Layer stack ===
+
+    pub fn pushLayer(self: *DrawList) void {
+        self.layer_stack.append(self.current_layer) catch {};
+        self.current_layer += 1;
+    }
+
+    pub fn popLayer(self: *DrawList) void {
+        if (self.layer_stack.pop()) |prev| {
+            self.current_layer = prev;
+        }
+    }
+};
+```
+
+### Draw Data
+
+The output passed to backends:
+
+```zig
+pub const DrawData = struct {
+    /// All draw commands for this frame
+    commands: []const DrawCommand,
+
+    /// Display dimensions
+    display_size: Size,
+
+    /// Framebuffer scale (for high-DPI: 2.0 on Retina)
+    framebuffer_scale: f32 = 1.0,
+
+    /// Total vertex count (for backends that pre-allocate)
+    total_vertex_count: u32 = 0,
+
+    /// Total index count
+    total_index_count: u32 = 0,
+};
+```
+
+### Render Backend Interface
+
+Backends implement this vtable:
+
+```zig
+pub const RenderBackend = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// Called at start of frame
+        beginFrame: *const fn (ptr: *anyopaque, data: *const DrawData) void,
+
+        /// Render all commands
+        render: *const fn (ptr: *anyopaque, data: *const DrawData) void,
+
+        /// Called at end of frame (present, swap buffers)
+        endFrame: *const fn (ptr: *anyopaque) void,
+
+        /// Create texture from pixel data, returns texture ID
+        createTexture: *const fn (
+            ptr: *anyopaque,
+            width: u32,
+            height: u32,
+            pixels: []const u8,
+        ) u32,
+
+        /// Destroy texture
+        destroyTexture: *const fn (ptr: *anyopaque, texture_id: u32) void,
+
+        /// Get text dimensions (for layout)
+        measureText: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            font_size: f32,
+            font_id: u16,
+        ) Size,
+    };
+
+    // Convenience wrappers
+    pub fn beginFrame(self: RenderBackend, data: *const DrawData) void {
+        self.vtable.beginFrame(self.ptr, data);
+    }
+
+    pub fn render(self: RenderBackend, data: *const DrawData) void {
+        self.vtable.render(self.ptr, data);
+    }
+
+    pub fn endFrame(self: RenderBackend) void {
+        self.vtable.endFrame(self.ptr);
+    }
+
+    pub fn measureText(self: RenderBackend, text: []const u8, font_size: f32, font_id: u16) Size {
+        return self.vtable.measureText(self.ptr, text, font_size, font_id);
+    }
+};
+```
+
+### Widget Render Info
+
+Widgets store render information during the UI function, which is used later to generate draw commands:
+
+```zig
+pub const WidgetRenderInfo = struct {
+    /// Widget type for dispatch
+    widget_type: WidgetType,
+
+    /// Display label (for buttons, text)
+    /// Points to comptime string = zero cost
+    /// Points to runtime string = must outlive frame
+    label: ?[]const u8 = null,
+
+    /// Colors (null = use theme defaults)
+    background_color: ?Color = null,
+    text_color: ?Color = null,
+    border_color: ?Color = null,
+
+    /// Visual state
+    is_hovered: bool = false,
+    is_pressed: bool = false,
+    is_focused: bool = false,
+    is_disabled: bool = false,
+
+    pub const WidgetType = enum(u8) {
+        container,
+        button,
+        text,
+        text_input,
+        checkbox,
+        slider,
+        separator,
+        image,
+        custom,
+    };
+};
+```
+
+### GUI Integration
+
+The GUI generates draw commands after layout:
+
+```zig
+pub const GUI = struct {
+    // ... existing fields ...
+
+    draw_list: DrawList,
+    render_info: std.AutoHashMap(u32, WidgetRenderInfo),
+    backend: ?RenderBackend = null,
+
+    /// Called after endFrame() computes layout
+    pub fn generateDrawCommands(self: *GUI) void {
+        self.draw_list.clear();
+
+        // Traverse widgets in tree order (for proper z-ordering)
+        self.generateForSubtree(ROOT_INDEX);
+    }
+
+    fn generateForSubtree(self: *GUI, layout_index: u32) void {
+        const rect = self.layout_engine.getRect(layout_index);
+        const widget_id = self.layout_to_widget.get(layout_index) orelse return;
+        const info = self.render_info.get(widget_id) orelse return;
+
+        // Push clip for containers with overflow: hidden
+        const needs_clip = self.shouldClip(layout_index);
+        if (needs_clip) self.draw_list.pushClip(rect);
+
+        // Generate draw commands based on widget type
+        switch (info.widget_type) {
+            .button => self.drawButton(rect, info),
+            .text => self.drawText(rect, info),
+            .container => self.drawContainer(rect, info),
+            // ... other widget types
+            else => {},
+        }
+
+        // Recurse to children
+        var child = self.layout_engine.getFirstChild(layout_index);
+        while (child != NULL_INDEX) {
+            self.generateForSubtree(child);
+            child = self.layout_engine.getNextSibling(child);
+        }
+
+        if (needs_clip) self.draw_list.popClip();
+    }
+
+    fn drawButton(self: *GUI, rect: Rect, info: WidgetRenderInfo) void {
+        const theme = self.style_system.theme;
+
+        // Background
+        const bg_color = if (info.is_pressed)
+            theme.button_pressed
+        else if (info.is_hovered)
+            theme.button_hovered
+        else
+            info.background_color orelse theme.button_normal;
+
+        self.draw_list.addFilledRectEx(rect, bg_color, theme.corner_radius);
+
+        // Border
+        if (info.is_focused) {
+            self.draw_list.addStrokeRect(rect, theme.focus_color, 2);
+        }
+
+        // Label
+        if (info.label) |label| {
+            const text_color = info.text_color orelse theme.text_primary;
+            const text_pos = self.centerTextInRect(label, rect);
+            self.draw_list.addText(text_pos, label, text_color);
+        }
+    }
+
+    fn drawText(self: *GUI, rect: Rect, info: WidgetRenderInfo) void {
+        if (info.label) |label| {
+            const color = info.text_color orelse self.style_system.theme.text_primary;
+            self.draw_list.addText(.{ .x = rect.x, .y = rect.y }, label, color);
+        }
+    }
+
+    fn drawContainer(self: *GUI, rect: Rect, info: WidgetRenderInfo) void {
+        // Only draw background if explicitly set
+        if (info.background_color) |bg| {
+            self.draw_list.addFilledRect(rect, bg);
+        }
+        if (info.border_color) |border| {
+            self.draw_list.addStrokeRect(rect, border, 1);
+        }
+    }
+
+    /// Get final draw data for backend
+    pub fn getDrawData(self: *const GUI) DrawData {
+        return .{
+            .commands = self.draw_list.commands.items,
+            .display_size = .{
+                .width = self.viewport_width,
+                .height = self.viewport_height,
+            },
+            .framebuffer_scale = self.framebuffer_scale,
+        };
+    }
+};
+```
+
+### Example Backend: SDL + OpenGL
+
+```zig
+pub const SdlOpenGlBackend = struct {
+    window: *SDL_Window,
+    gl_context: SDL_GLContext,
+    shader_program: GLuint,
+    vao: GLuint,
+    vbo: GLuint,
+    ebo: GLuint,
+
+    pub fn init(window: *SDL_Window) !SdlOpenGlBackend {
+        const gl_context = SDL_GL_CreateContext(window);
+        // ... compile shaders, create buffers ...
+        return .{ ... };
+    }
+
+    pub fn interface(self: *SdlOpenGlBackend) RenderBackend {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = RenderBackend.VTable{
+        .beginFrame = beginFrameImpl,
+        .render = renderImpl,
+        .endFrame = endFrameImpl,
+        .createTexture = createTextureImpl,
+        .destroyTexture = destroyTextureImpl,
+        .measureText = measureTextImpl,
+    };
+
+    fn renderImpl(ptr: *anyopaque, data: *const DrawData) void {
+        const self: *SdlOpenGlBackend = @ptrCast(@alignCast(ptr));
+
+        glUseProgram(self.shader_program);
+        glBindVertexArray(self.vao);
+
+        for (data.commands) |cmd| {
+            // Apply clip rect as scissor
+            if (cmd.clip_rect) |clip| {
+                glEnable(GL_SCISSOR_TEST);
+                glScissor(
+                    @intFromFloat(clip.x * data.framebuffer_scale),
+                    @intFromFloat((data.display_size.height - clip.y - clip.height) * data.framebuffer_scale),
+                    @intFromFloat(clip.width * data.framebuffer_scale),
+                    @intFromFloat(clip.height * data.framebuffer_scale),
+                );
+            } else {
+                glDisable(GL_SCISSOR_TEST);
+            }
+
+            // Dispatch by primitive type
+            switch (cmd.primitive) {
+                .fill_rect => |r| self.renderFilledRect(r),
+                .stroke_rect => |r| self.renderStrokeRect(r),
+                .text => |t| self.renderText(t),
+                .line => |l| self.renderLine(l),
+                .vertices => |v| self.renderVertices(v),
+            }
+        }
+    }
+
+    fn endFrameImpl(ptr: *anyopaque) void {
+        const self: *SdlOpenGlBackend = @ptrCast(@alignCast(ptr));
+        SDL_GL_SwapWindow(self.window);
+    }
+};
+```
+
+### Example Backend: Software Rasterizer (Embedded)
+
+```zig
+pub const SoftwareBackend = struct {
+    framebuffer: []u32,  // ARGB pixels
+    width: u32,
+    height: u32,
+
+    pub fn init(buffer: []u32, width: u32, height: u32) SoftwareBackend {
+        return .{
+            .framebuffer = buffer,
+            .width = width,
+            .height = height,
+        };
+    }
+
+    pub fn interface(self: *SoftwareBackend) RenderBackend {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = RenderBackend.VTable{
+        .beginFrame = beginFrameImpl,
+        .render = renderImpl,
+        .endFrame = endFrameImpl,
+        .createTexture = createTextureImpl,
+        .destroyTexture = destroyTextureImpl,
+        .measureText = measureTextImpl,
+    };
+
+    fn renderImpl(ptr: *anyopaque, data: *const DrawData) void {
+        const self: *SoftwareBackend = @ptrCast(@alignCast(ptr));
+
+        for (data.commands) |cmd| {
+            switch (cmd.primitive) {
+                .fill_rect => |r| self.fillRect(r, cmd.clip_rect),
+                .stroke_rect => |r| self.strokeRect(r, cmd.clip_rect),
+                .text => |t| self.drawText(t, cmd.clip_rect),
+                .line => |l| self.drawLine(l, cmd.clip_rect),
+                .vertices => {}, // Skip complex primitives on embedded
+            }
+        }
+    }
+
+    fn fillRect(self: *SoftwareBackend, r: FillRect, clip: ?Rect) void {
+        const bounds = if (clip) |c| r.rect.intersect(c) else r.rect;
+        const x0 = @max(0, @as(i32, @intFromFloat(bounds.x)));
+        const y0 = @max(0, @as(i32, @intFromFloat(bounds.y)));
+        const x1 = @min(self.width, @as(u32, @intFromFloat(bounds.x + bounds.width)));
+        const y1 = @min(self.height, @as(u32, @intFromFloat(bounds.y + bounds.height)));
+
+        const color = r.color.toARGB();
+        var y: u32 = @intCast(y0);
+        while (y < y1) : (y += 1) {
+            var x: u32 = @intCast(x0);
+            while (x < x1) : (x += 1) {
+                self.framebuffer[y * self.width + x] = color;
+            }
+        }
+    }
+};
+```
+
+### Memory Budget (Embedded)
+
+```
+DrawCommand:      ~48 bytes (primitive union + clip + layer + id)
+DrawList:         ~64 bytes base + commands array
+
+Typical frame (32 widgets × 2 commands each = 64 commands):
+64 × 48 = 3 KB
+
+Total draw system overhead:
+- DrawList struct:          64 bytes
+- Commands (64 max):     3,072 bytes
+- Render info (32 max):    512 bytes
+─────────────────────────────────────
+Total:                   ~3.6 KB (11% of 32KB budget)
+```
+
+For extreme memory constraints, use immediate rendering mode (no command buffering):
+
+```zig
+// Immediate mode: render directly during traversal
+pub fn renderImmediate(self: *GUI, backend: RenderBackend) void {
+    backend.beginFrame(&.{ .display_size = self.display_size });
+    self.renderSubtreeImmediate(ROOT_INDEX, backend);
+    backend.endFrame();
+}
+```
+
+### Provided Backends
+
+zig-gui will ship reference implementations:
+
+| Backend | Target | Dependencies |
+|---------|--------|--------------|
+| `SdlOpenGlBackend` | Desktop (Windows, Linux, macOS) | SDL2, OpenGL 3.3 |
+| `SdlSoftwareBackend` | Desktop (no GPU) | SDL2 |
+| `SoftwareBackend` | Embedded, Headless | None |
+| `WebGpuBackend` | Browser | WebGPU |
+| `MetalBackend` | macOS, iOS | Metal |
+| `VulkanBackend` | Desktop, Android | Vulkan |
+
+Users can also implement custom backends (game engine integration, etc.).
+
+---
+
 ## Platform Integration
 
 ### Desktop (SDL)
