@@ -1,0 +1,277 @@
+# Text Rendering Design Options
+
+**Status**: Design exploration complete. Ready for implementation decision.
+
+## Executive Summary
+
+After researching modern text rendering approaches and running experiments, we recommend a **Hybrid Interface** design (Design E) that provides:
+
+1. **Simple core API** (5 required functions) for basic text rendering
+2. **Optional extensions** (null vtable entries) for advanced features
+3. **Zero allocation** in the render path
+4. **Unified interface** across embedded and desktop
+
+This approach supports our full target range: 32KB embedded to 1MB desktop.
+
+---
+
+## Research Findings
+
+### Key Insights
+
+1. **The Rust ecosystem is the new state of art**
+   - [fontations](https://behdad.org/text2024/) is unifying font handling
+   - [cosmic-text](https://github.com/pop-os/cosmic-text) provides complete text layout
+   - [swash](https://github.com/dfrg/swash) offers full OpenType support
+   - We can port concepts to Zig or interface with these via C bindings
+
+2. **Atlas management is the hidden complexity**
+   - The interface isn't just `measureText()` and `rasterize()`
+   - Real systems need: atlas creation, glyph eviction, texture upload notifications
+   - Dear ImGui 1.92's dynamic fonts show how complex this gets
+
+3. **Compression makes embedded viable**
+   - [MCUFont](https://github.com/mcufont/mcufont) achieves ~4-5x compression on AA fonts
+   - A 12x20 antialiased ASCII font fits in ~6KB compressed
+   - Leaves plenty of room in 32KB budget
+
+4. **GPU text is moving to direct vector rendering**
+   - [Vello](https://lib.rs/crates/vello) uses compute shaders for vector paths
+   - [Will Dobbie's approach](https://wdobbie.com/post/gpu-text-rendering-with-vector-textures/) stores beziers in texture
+   - SDF/MSDF remain practical for most use cases
+
+### Memory Budget Reality
+
+From our experiments:
+
+| Configuration | Memory Used | % of Budget |
+|--------------|-------------|-------------|
+| Embedded minimal (8x8 1-bit) | 1.8 KB | 5.6% of 32KB |
+| Embedded quality (12x20 AA) | 9 KB | 27.6% of 32KB |
+| Desktop SW (512x512 atlas + cache) | 423 KB | 40.3% of 1MB |
+| Desktop GPU (MSDF in VRAM) | 7 KB RAM | 0.7% of 1MB |
+
+**Key finding**: We have more headroom than expected at both ends.
+
+---
+
+## Recommended Design: Hybrid Interface
+
+### Core Interface (Required)
+
+```zig
+pub const TextProvider = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        // Core (required) ─────────────────────────────────
+
+        /// Measure text bounds for layout
+        measureText: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            font_id: u16,
+            size: f32,
+        ) TextMetrics,
+
+        /// Get positioned glyph quads for rendering
+        /// Caller provides output buffer (zero allocation)
+        getGlyphQuads: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            font_id: u16,
+            size: f32,
+            origin: [2]f32,
+            out_quads: []GlyphQuad,
+            out_atlas_id: *u16,
+        ) usize,
+
+        /// Get atlas texture info
+        getAtlas: *const fn (ptr: *anyopaque, atlas_id: u16) ?AtlasInfo,
+
+        /// Frame lifecycle
+        beginFrame: *const fn (ptr: *anyopaque) void,
+        endFrame: *const fn (ptr: *anyopaque) void,
+
+        // Extensions (optional, null = not supported) ─────
+
+        /// For text input cursor placement
+        getCharPositions: ?*const fn (...) usize,
+
+        /// For complex scripts (Arabic, Devanagari)
+        shapeText: ?*const fn (...) usize,
+
+        /// For runtime font loading
+        loadFont: ?*const fn (...) ?u16,
+    };
+};
+```
+
+### Why This Design
+
+| Requirement | How Addressed |
+|-------------|---------------|
+| Zero allocation in render loop | `getGlyphQuads` writes to caller's buffer |
+| Atlas texture caching | `getAtlas` returns generation counter |
+| Embedded simplicity | Extensions are null, only 5 functions needed |
+| Desktop features | Extensions enable shaping, runtime fonts |
+| C API compatibility | vtable maps cleanly to function pointers |
+
+### Provider Tiers
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     TextProvider Interface                       │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+       ┌───────────────────────┼───────────────────────┐
+       │                       │                       │
+       ▼                       ▼                       ▼
+┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
+│ BitmapProvider  │   │  StbProvider    │   │  SdfProvider    │
+│ (Embedded)      │   │  (Desktop SW)   │   │  (Desktop GPU)  │
+├─────────────────┤   ├─────────────────┤   ├─────────────────┤
+│ • Comptime font │   │ • stb_truetype  │   │ • MSDF atlas    │
+│ • RLE decode    │   │ • Glyph cache   │   │ • GPU shader    │
+│ • No extensions │   │ • +charPositions│   │ • +loadFont     │
+│                 │   │ • +loadFont     │   │                 │
+│ ~3KB code       │   │ ~25KB code      │   │ ~10KB code      │
+│ ~6KB data       │   │ ~400KB RAM      │   │ ~3MB VRAM       │
+└─────────────────┘   └─────────────────┘   └─────────────────┘
+```
+
+---
+
+## Implementation Plan
+
+### Phase 1: Core Infrastructure
+
+1. **Define types** in `src/text.zig`:
+   - `TextProvider` interface
+   - `TextMetrics`, `GlyphQuad`, `AtlasInfo`
+   - `TextStyle` for font/size selection
+
+2. **Implement `BitmapProvider`**:
+   - Comptime font embedding via `@embedFile`
+   - RLE decompression (MCUFont-style)
+   - Fixed-size ASCII atlas
+   - Validates embedded constraints
+
+3. **Integrate with GUI**:
+   - `gui.text()` uses provider for measurement
+   - Draw system generates text commands
+   - Backend renders via `getGlyphQuads`
+
+### Phase 2: Desktop Provider
+
+4. **Implement `StbProvider`**:
+   - Wrap stb_truetype.h (or port to Zig)
+   - Dynamic glyph cache (LRU)
+   - Atlas packing with overflow pages
+   - Runtime font loading
+
+5. **Add cursor support**:
+   - Implement `getCharPositions`
+   - Enable text input fields
+
+### Phase 3: Advanced Features
+
+6. **GPU rendering path**:
+   - SDF/MSDF atlas generation
+   - Shader for SDF rendering
+   - Or: explore Vello-style compute
+
+7. **Complex script shaping** (optional):
+   - Interface with HarfBuzz/RustyBuzz
+   - Or: simple kerning-only fallback
+
+---
+
+## Open Decisions
+
+### 1. Line Breaking
+
+**Options**:
+- A) In TextProvider (cosmic-text approach)
+- B) In GUI layer (Dear ImGui approach)
+- C) Separate LineBreaker interface
+
+**Recommendation**: B (GUI layer). The GUI has container width context. Provider just measures words.
+
+### 2. Font Fallback
+
+**Options**:
+- A) User provides fallback chain
+- B) Built-in Unicode coverage detection
+- C) Platform font discovery
+
+**Recommendation**: A (user responsibility). Built-in fallback adds complexity for marginal benefit.
+
+### 3. Color Emoji
+
+**Options**:
+- A) Support via RGBA atlas pages
+- B) Not supported initially
+- C) Separate emoji provider
+
+**Recommendation**: B initially, A later. Color emoji can be added via atlas format flag.
+
+### 4. stb_truetype vs Zig Port
+
+**Options**:
+- A) Wrap stb_truetype.h via C import
+- B) Port stb_truetype to Zig
+- C) Use fontdue concepts (port from Rust)
+
+**Recommendation**: A initially (faster), consider B later for pure-Zig builds.
+
+---
+
+## Experiment Results
+
+All experiments are runnable:
+
+```bash
+cd /home/user/zig-gui
+zig run experiments/text_rendering/01_bitmap_baseline.zig
+zig run experiments/text_rendering/02_rle_compression.zig
+zig run experiments/text_rendering/03_interface_design.zig
+zig run experiments/text_rendering/04_memory_budget.zig
+```
+
+### Key Metrics
+
+| Experiment | Key Finding |
+|------------|-------------|
+| 01_bitmap_baseline | 12 ns/char render, 37% budget for 8-bit font |
+| 02_rle_compression | MCUFont achieves 4.9x compression |
+| 03_interface_design | Design E balances simplicity + extensibility |
+| 04_memory_budget | Both embedded and desktop have headroom |
+
+---
+
+## References
+
+### Primary Sources
+- [State of Text Rendering 2024](https://behdad.org/text2024/)
+- [Inside the fastest font renderer](https://medium.com/@raphlinus/inside-the-fastest-font-renderer-in-the-world-75ae5270c445)
+- [GPU text with vector textures](https://wdobbie.com/post/gpu-text-rendering-with-vector-textures/)
+
+### Libraries to Study
+- [mcufont](https://github.com/mcufont/mcufont) - Embedded compression
+- [fontdue](https://github.com/mooman219/fontdue) - Fast Rust rasterizer
+- [cosmic-text](https://github.com/pop-os/cosmic-text) - Rust text layout
+- [stb_truetype](https://github.com/nothings/stb/blob/master/stb_truetype.h) - C rasterizer
+
+---
+
+## Next Steps
+
+1. **Get team alignment** on this design
+2. **Start Phase 1** with `BitmapProvider`
+3. **Create test font** using MCUFont encoder
+4. **Integrate** with existing draw system
+5. **Iterate** based on real usage
+
+The experiments in this directory serve as a foundation for implementation.
