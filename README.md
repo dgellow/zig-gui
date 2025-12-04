@@ -6,7 +6,7 @@
 A high-performance UI library combining event-driven execution, immediate-mode API, and universal targeting.
 
 <p align="center">
-  <img src="./mascot.png" alt="Zeph the Zalamander - zig-gui mascot" />
+  <img src="./mascot.png" alt="Zeph the Zalamander - zig-gui mascot" width="400px" />
 </p>
 
 ## Rendered Output
