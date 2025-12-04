@@ -113,6 +113,22 @@ pub fn build(b: *std.Build) void {
     const render_demo_step = b.step("render-demo", "Run render demo (outputs PPM image)");
     render_demo_step.dependOn(&render_demo_run.step);
 
+    // GUI demo (GUI widgets → DrawList → SoftwareBackend → PPM)
+    const gui_demo_exe = b.addExecutable(.{
+        .name = "gui_demo",
+        .root_source_file = b.path("examples/gui_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gui_demo_exe.root_module.addImport("zig-gui", zig_gui_mod);
+    b.installArtifact(gui_demo_exe);
+
+    const gui_demo_run = b.addRunArtifact(gui_demo_exe);
+    gui_demo_run.step.dependOn(b.getInstallStep());
+
+    const gui_demo_step = b.step("gui-demo", "Run GUI integration demo (outputs PPM image)");
+    gui_demo_step.dependOn(&gui_demo_run.step);
+
     // Rendering benchmark (software renderer with actual pixel drawing)
     const rendering_benchmark_exe = b.addExecutable(.{
         .name = "rendering_benchmark",
