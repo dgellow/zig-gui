@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const gui_mod = @import("zig-gui");
+const profiler = gui_mod.profiler;
 
 const DrawList = gui_mod.draw.DrawList;
 const DrawData = gui_mod.draw.DrawData;
@@ -59,6 +60,24 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Initialize profiler
+    try profiler.init(allocator, .{
+        .max_zones_per_frame = 1000,
+        .max_frames_in_history = 10,
+    });
+    defer profiler.deinit();
+
+    profiler.frameStart();
+    defer {
+        profiler.frameEnd();
+        // Export profile data
+        if (profiler.enabled) {
+            profiler.exportJSON("gui_demo_profile.json") catch {};
+            std.debug.print("\nProfile exported to gui_demo_profile.json\n", .{});
+            std.debug.print("Open in chrome://tracing to visualize\n", .{});
+        }
+    }
+
     const width: u32 = 1200;
     const height: u32 = 800;
 
@@ -68,6 +87,9 @@ pub fn main() !void {
 
     var draw = DrawList.init(allocator);
     defer draw.deinit();
+
+    profiler.zone(@src(), "buildDrawList", .{});
+    defer profiler.endZone();
 
     // ═══════════════════════════════════════════════════════════════════
     // SIDEBAR (left navigation)
@@ -589,15 +611,21 @@ pub fn main() !void {
     // RENDER
     // ═══════════════════════════════════════════════════════════════════
 
+    // End buildDrawList zone before render
+    profiler.endZone();
+
     const draw_data = DrawData{
         .commands = draw.getCommands(),
         .display_size = .{ .width = @floatFromInt(width), .height = @floatFromInt(height) },
     };
 
-    std.debug.print("Frame generated {d} draw commands\n", .{draw_data.commandCount()});
-    std.debug.print("Display size: {d}x{d}\n", .{ width, height });
+    std.debug.print("\n=== Performance ===\n", .{});
+    std.debug.print("Draw commands: {d}\n", .{draw_data.commandCount()});
+    std.debug.print("Display: {d}x{d} ({d} pixels)\n", .{ width, height, width * height });
+    std.debug.print("Profiling: {s}\n", .{if (profiler.enabled) "ENABLED" else "disabled"});
 
     const iface = backend.interface();
+
     iface.beginFrame(&draw_data);
     iface.render(&draw_data);
     iface.endFrame();
@@ -608,12 +636,21 @@ pub fn main() !void {
 
     const output_path = if (args.len > 1) args[1] else "gui_demo.ppm";
 
-    const file = try std.fs.cwd().createFile(output_path, .{});
-    defer file.close();
+    {
+        profiler.zone(@src(), "writePPM", .{});
+        defer profiler.endZone();
 
-    try backend.writePPM(file.writer());
+        const file = try std.fs.cwd().createFile(output_path, .{});
+        defer file.close();
+        var buf_writer = std.io.bufferedWriter(file.writer());
+        try backend.writePPM(buf_writer.writer());
+        try buf_writer.flush();
+    }
 
     std.debug.print("Rendered to {s}\n", .{output_path});
+
+    // Re-enter buildDrawList zone for proper nesting (defer will end it)
+    profiler.zone(@src(), "cleanup", .{});
 }
 
 fn drawComment(draw: *DrawList, x: f32, y: f32, avatar_color: Color, text_width: f32, with_reaction: bool) void {

@@ -10,6 +10,7 @@
 const std = @import("std");
 const geometry = @import("core/geometry.zig");
 const color_mod = @import("core/color.zig");
+const profiler = @import("profiler.zig");
 
 pub const Rect = geometry.Rect;
 pub const Point = geometry.Point;
@@ -515,22 +516,42 @@ pub const SoftwareBackend = struct {
     };
 
     fn beginFrameImpl(ptr: *anyopaque, _: *const DrawData) void {
+        profiler.zone(@src(), "SoftwareBackend.beginFrame", .{});
+        defer profiler.endZone();
+
         const self: *SoftwareBackend = @ptrCast(@alignCast(ptr));
         // Clear to background color
         @memset(self.pixels, self.clear_color);
     }
 
     fn renderImpl(ptr: *anyopaque, data: *const DrawData) void {
+        profiler.zone(@src(), "SoftwareBackend.render", .{});
+        defer profiler.endZone();
+
         const self: *SoftwareBackend = @ptrCast(@alignCast(ptr));
+
+        var fill_count: u32 = 0;
+        var stroke_count: u32 = 0;
 
         for (data.commands) |cmd| {
             switch (cmd.primitive) {
-                .fill_rect => |r| self.renderFillRect(r, cmd.clip_rect),
-                .stroke_rect => |r| self.renderStrokeRect(r, cmd.clip_rect),
+                .fill_rect => |r| {
+                    self.renderFillRect(r, cmd.clip_rect);
+                    fill_count += 1;
+                },
+                .stroke_rect => |r| {
+                    self.renderStrokeRect(r, cmd.clip_rect);
+                    stroke_count += 1;
+                },
                 .line => |l| self.renderLine(l, cmd.clip_rect),
                 .text => {}, // Text rendering requires font atlas - skip for now
                 .vertices => {}, // Complex - skip for basic implementation
             }
+        }
+
+        // Log primitive counts for analysis
+        if (profiler.enabled and fill_count + stroke_count > 0) {
+            std.debug.print("  Primitives: {d} fills, {d} strokes\n", .{ fill_count, stroke_count });
         }
     }
 
@@ -562,13 +583,49 @@ pub const SoftwareBackend = struct {
         const x1 = self.clampX(bounds.x + bounds.width);
         const y1 = self.clampY(bounds.y + bounds.height);
 
-        var y = y0;
-        while (y < y1) : (y += 1) {
-            var x = x0;
-            while (x < x1) : (x += 1) {
-                self.blendPixel(x, y, color);
+        if (x1 <= x0 or y1 <= y0) return;
+
+        const src_a = (color >> 24) & 0xFF;
+
+        if (src_a == 255) {
+            // Fast path: opaque color - use direct memory fills
+            const row_width = x1 - x0;
+            var y = y0;
+            while (y < y1) : (y += 1) {
+                const row_start = y * self.width + x0;
+                @memset(self.pixels[row_start..][0..row_width], color);
+            }
+        } else if (src_a > 0) {
+            // Slow path: alpha blending required
+            var y = y0;
+            while (y < y1) : (y += 1) {
+                var x = x0;
+                while (x < x1) : (x += 1) {
+                    self.blendPixelUnchecked(x, y, color, src_a);
+                }
             }
         }
+        // src_a == 0: fully transparent, nothing to draw
+    }
+
+    /// Blend pixel without bounds checking (caller must ensure valid coords)
+    inline fn blendPixelUnchecked(self: *SoftwareBackend, x: u32, y: u32, color: u32, src_a: u32) void {
+        const idx = y * self.width + x;
+        const dst = self.pixels[idx];
+        const dst_r = (dst >> 16) & 0xFF;
+        const dst_g = (dst >> 8) & 0xFF;
+        const dst_b = dst & 0xFF;
+
+        const src_r = (color >> 16) & 0xFF;
+        const src_g = (color >> 8) & 0xFF;
+        const src_b = color & 0xFF;
+
+        const inv_a = 255 - src_a;
+        const out_r = (src_r * src_a + dst_r * inv_a) / 255;
+        const out_g = (src_g * src_a + dst_g * inv_a) / 255;
+        const out_b = (src_b * src_a + dst_b * inv_a) / 255;
+
+        self.pixels[idx] = 0xFF000000 | (out_r << 16) | (out_g << 8) | out_b;
     }
 
     fn renderStrokeRect(self: *SoftwareBackend, r: DrawPrimitive.StrokeRect, clip: ?Rect) void {
@@ -721,8 +778,38 @@ pub const SoftwareBackend = struct {
 
     // === Image output ===
 
-    /// Write the framebuffer to a PPM file (P3 format - ASCII)
+    /// Write the framebuffer to a PPM file (P6 format - binary, fast)
     pub fn writePPM(self: *const SoftwareBackend, writer: anytype) !void {
+        // Use P6 binary format - much faster than P3 ASCII
+        try writer.print("P6\n{} {}\n255\n", .{ self.width, self.height });
+
+        // Write row by row with a buffer to minimize syscalls
+        var row_buffer: [1200 * 3]u8 = undefined;
+
+        for (0..self.height) |y| {
+            var buf_idx: usize = 0;
+            for (0..self.width) |x| {
+                const pixel = self.pixels[y * self.width + x];
+                if (buf_idx + 3 <= row_buffer.len) {
+                    row_buffer[buf_idx] = @truncate((pixel >> 16) & 0xFF);
+                    row_buffer[buf_idx + 1] = @truncate((pixel >> 8) & 0xFF);
+                    row_buffer[buf_idx + 2] = @truncate(pixel & 0xFF);
+                    buf_idx += 3;
+                } else {
+                    // Fallback for wider images
+                    try writer.writeByte(@truncate((pixel >> 16) & 0xFF));
+                    try writer.writeByte(@truncate((pixel >> 8) & 0xFF));
+                    try writer.writeByte(@truncate(pixel & 0xFF));
+                }
+            }
+            if (buf_idx > 0) {
+                try writer.writeAll(row_buffer[0..buf_idx]);
+            }
+        }
+    }
+
+    /// Write the framebuffer to a PPM file (P3 format - ASCII, slow but human-readable)
+    pub fn writePPMAscii(self: *const SoftwareBackend, writer: anytype) !void {
         try writer.print("P3\n{} {}\n255\n", .{ self.width, self.height });
 
         for (0..self.height) |y| {
