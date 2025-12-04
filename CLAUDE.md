@@ -8,16 +8,27 @@ zig-gui is a high-performance UI library combining event-driven execution (0% id
 
 ## Build & Test
 
-**Zig executable location:** `/tmp/zig-linux-x86_64-0.13.0/zig`
+**Finding Zig:**
+
+1. First, check if `zig` is in PATH: `which zig`
+2. If not found, check `/tmp/zig-linux-x86_64-0.13.0/zig`
+3. If still not found, download and extract:
+   ```bash
+   cd /tmp
+   curl -LO https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+   tar -xf zig-linux-x86_64-0.13.0.tar.xz
+   ```
+
+**Build commands:**
 
 ```bash
-/tmp/zig-linux-x86_64-0.13.0/zig build test              # Run all tests
-/tmp/zig-linux-x86_64-0.13.0/zig build                   # Build debug
-/tmp/zig-linux-x86_64-0.13.0/zig build -Doptimize=ReleaseFast    # Build release
-/tmp/zig-linux-x86_64-0.13.0/zig build -Denable_profiling=true   # Build with profiling
+zig build test                           # Run all tests
+zig build                                # Build debug
+zig build -Doptimize=ReleaseFast         # Build release
+zig build -Denable_profiling=true        # Build with profiling
 ```
 
-If zig is not in PATH, always use the full path above.
+Replace `zig` with the full path if not in PATH.
 
 ## Code Organization
 
