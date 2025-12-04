@@ -1481,6 +1481,175 @@ Users can also implement custom backends (game engine integration, etc.).
 
 ---
 
+## Text Rendering (DRAFT - Needs More Exploration)
+
+> **Status**: This section is a design draft. The interface and approach need further exploration before implementation.
+
+### The Challenge
+
+zig-gui targets an unusual span: **embedded (32KB RAM, 128KB flash) to desktop (1MB budget)**. Most text rendering solutions optimize for one end or the other, not both. We need a pluggable system that allows:
+
+- Embedded: Pre-baked bitmap fonts, zero runtime deps
+- Desktop software: Runtime TTF rasterization with caching
+- Desktop GPU: SDF/MSDF for scalable text
+
+### Design Philosophy: BYOT (Bring Your Own Text)
+
+Following the BYOR pattern for rendering, text should also be pluggable. The GUI defines what it needs from text; users provide the implementation.
+
+### Proposed TextProvider Interface
+
+```zig
+/// What zig-gui needs from a text system
+pub const TextProvider = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// Measure text bounds without rendering
+        measureText: *const fn (ptr: *anyopaque, text: []const u8, style: TextStyle) TextMetrics,
+
+        /// Get per-character x positions (for cursor/selection in text input)
+        getCharPositions: *const fn (ptr: *anyopaque, text: []const u8, style: TextStyle, out: []f32) usize,
+
+        /// Rasterize text to pixel buffer (RGBA or alpha-only)
+        rasterizeText: *const fn (ptr: *anyopaque, text: []const u8, style: TextStyle, allocator: Allocator) ?RasterizedText,
+
+        /// Free rasterized text
+        freeRasterized: *const fn (ptr: *anyopaque, rasterized: RasterizedText, allocator: Allocator) void,
+    };
+
+    pub const TextStyle = struct {
+        font_id: u16 = 0,        // User-defined font identifier
+        size: f32 = 16,          // Logical size (provider interprets)
+        weight: u16 = 400,       // 400 = normal, 700 = bold
+        flags: packed struct {
+            italic: bool = false,
+            underline: bool = false,
+            strikethrough: bool = false,
+            _padding: u5 = 0,
+        } = .{},
+    };
+
+    pub const TextMetrics = struct {
+        width: f32,
+        height: f32,
+        ascent: f32,      // Baseline to top
+        descent: f32,     // Baseline to bottom
+        line_height: f32, // For multiline
+    };
+
+    pub const RasterizedText = struct {
+        pixels: []const u8,  // RGBA or A8 (see format)
+        width: u32,
+        height: u32,
+        format: enum { rgba, alpha },
+        bearing_x: i16,      // Offset from origin
+        bearing_y: i16,
+    };
+};
+```
+
+### Tiered Provider Strategy
+
+| Provider | Binary Size | RAM | Features | Target |
+|----------|-------------|-----|----------|--------|
+| `BitmapProvider` | ~2KB code | fonts only | Fixed sizes, fast | Embedded |
+| `StbProvider` | ~20KB code | +glyph cache | Any TTF, any size | Desktop SW |
+| `SdfProvider` | ~5KB code | +atlas | GPU scaling | Desktop GPU |
+| `NullProvider` | ~100B | 0 | No text (icons only) | Minimal |
+
+### Configuration Knobs
+
+**Provider Selection** (compile-time or runtime):
+```zig
+const App = zig_gui.App(MyState, .{
+    .text_provider = .bitmap,       // Built-in bitmap fonts
+    // OR
+    .text_provider = .stb_truetype, // Runtime TTF rasterization
+    // OR
+    .text_provider = .custom,       // User implements TextProvider
+});
+```
+
+**Font Registration**:
+```zig
+// Bitmap: register at comptime
+const fonts = zig_gui.BitmapFonts.init(.{
+    .{ .id = 0, .name = "default", .data = @embedFile("fonts/default_16.bin") },
+});
+
+// TTF: register at runtime
+try text_provider.loadFont(0, font_data, .{ .default_size = 16 });
+```
+
+**Caching Strategy**:
+```zig
+const StbTextProvider = zig_gui.StbTextProvider.init(allocator, .{
+    .glyph_cache_size = 256,      // Max cached glyphs
+    .atlas_size = .{ 512, 512 },  // Texture atlas dimensions
+    .cache_policy = .lru,         // or .fifo, .none
+});
+```
+
+### Integration with Draw System
+
+Text commands flow through the existing draw pipeline:
+
+```zig
+// DrawList stores text + style, rasterization happens at render time
+pub fn addText(self: *DrawList, text: []const u8, pos: Point, style: TextStyle, color: Color) void {
+    self.commands.append(.{
+        .text = .{ .text = text, .x = pos.x, .y = pos.y, .style = style, .color = color },
+    });
+}
+
+// Backend uses TextProvider to rasterize, or passes through to GPU text renderer
+```
+
+### Open Questions (Needs Exploration)
+
+1. **Text input fields**: The current interface may not handle cursor positioning and text selection well. Need to explore what additional API surface is required for editable text.
+
+2. **Shaping**: Complex scripts (Arabic, Devanagari, ligatures) require HarfBuzz or similar. Should this be part of TextProvider or a separate layer?
+
+3. **Line breaking**: Where does word-wrap logic live? In the GUI layer, layout engine, or TextProvider?
+
+4. **Font fallback**: When a glyph isn't in the current font, how do we fall back to another font? User responsibility or built-in?
+
+5. **Memory budget on embedded**: With 32KB RAM, how many glyphs can we realistically cache? Is pre-rasterization the only viable path?
+
+6. **SDF on software backend**: Can we efficiently render SDF fonts without a GPU shader? Or should SoftwareBackend always use bitmap?
+
+### State of the Art (Research Summary)
+
+**Approaches evaluated:**
+
+| Approach | Pros | Cons | Best For |
+|----------|------|------|----------|
+| Bitmap atlas (Dear ImGui style) | Fast, simple, predictable | Fixed sizes, large memory for Unicode | Embedded, games |
+| SDF/MSDF (Valve 2007) | Scalable, cheap outlines | Requires GPU shader | GPU backends |
+| stb_truetype | Any font/size, ~20KB code | CPU rasterization cost | Desktop software |
+| font-rs (Raph Levien) | SIMD-accelerated CPU raster | Rust, harder to port | Performance-critical |
+| FreeType + HarfBuzz | Full-featured, production-proven | 200KB+ binary, complex | Full i18n support |
+
+**Key references:**
+- Valve's "Improved Alpha-Tested Magnification" (2007) - SDF technique
+- msdfgen - Multi-channel SDF for sharper corners
+- Slug library (Eric Lengyel) - GPU vector text
+- Behdad's "State of Text Rendering 2024" - Industry trends
+
+### Next Steps
+
+Before implementation:
+1. Prototype `BitmapProvider` with embedded font data
+2. Prototype `StbProvider` with glyph caching
+3. Evaluate text input field requirements
+4. Decide on line-breaking/word-wrap responsibility
+5. Benchmark memory usage across tiers
+
+---
+
 ## Platform Integration
 
 ### Desktop (SDL)
