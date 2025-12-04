@@ -11,13 +11,13 @@ A high-performance UI library combining event-driven execution, immediate-mode A
 
 ## Rendered Output
 
-Real pixel output from the BYOR (Bring Your Own Renderer) draw system - a Settings UI with menu bar, checkboxes, and buttons:
+Real pixel output from the BYOR (Bring Your Own Renderer) draw system - a Linear-style issue tracker:
 
 <p align="center">
-  <img src="./docs/gui_demo.png" alt="Settings UI - menu bar, checkboxes, separators rendered to pixels" />
+  <img src="./docs/gui_demo.png" alt="Linear-style issue tracker UI rendered to pixels" />
 </p>
 
-*61 draw commands → SoftwareBackend → 640×480 pixels. Text rendering coming soon. Generated with `zig build gui-demo`.*
+*130 draw commands → SoftwareBackend → 1200×800 pixels. Sidebar, issue detail, comments, tags, avatars. Text rendering coming soon. Generated with `zig build gui-demo`.*
 
 ## Goals
 
