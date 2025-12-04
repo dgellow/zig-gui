@@ -250,6 +250,10 @@ Establish baseline with simplest possible approach:
 - Direct framebuffer write
 - Measure: code size, render time, memory
 
+```bash
+zig run experiments/text_rendering/01_bitmap_baseline.zig
+```
+
 ### Experiment 2: RLE Compression (`02_rle_compression.zig`)
 
 Test MCUFont-style compression:
@@ -258,35 +262,47 @@ Test MCUFont-style compression:
 - Measure decode-to-framebuffer speed
 - Calculate break-even point vs raw bitmap
 
-### Experiment 3: Atlas Management (`03_atlas_strategies.zig`)
+```bash
+zig run experiments/text_rendering/02_rle_compression.zig
+```
 
-Compare atlas strategies:
-- Static (pre-packed)
-- Dynamic (add-on-demand)
-- LRU eviction
-- Multi-page
-
-### Experiment 4: Interface Variations (`04_interface_design.zig`)
+### Experiment 3: Interface Design (`03_interface_design.zig`)
 
 Prototype different API surfaces:
-- BYOT (Bring Your Own Text) - current proposal
-- Integrated provider
-- Callback-based
-- Atlas-centric
+- Design A: Allocating (current DESIGN.md draft)
+- Design B: Atlas-centric
+- Design C: Callback-based
+- Design D: Minimal embedded
+- Design E: Hybrid (recommended)
 
-### Experiment 5: Memory Budget Calculator (`05_memory_budget.zig`)
+```bash
+zig run experiments/text_rendering/03_interface_design.zig
+```
+
+### Experiment 4: Memory Budget Calculator (`04_memory_budget.zig`)
 
 Concrete numbers for:
 - Embedded 32KB budget
-- Desktop 1MB budget
+- Desktop 1MB budget (RAM vs VRAM separation)
 - What can we afford at each tier?
 
-### Experiment 6: stb_truetype Integration (`06_stb_integration.zig`)
+```bash
+zig run experiments/text_rendering/04_memory_budget.zig
+```
 
-Test Zig wrapper for stb_truetype:
-- Measure rasterization speed
-- Glyph cache design
-- Memory usage
+### Experiment 5: stb_truetype Integration (`05_stb_integration.zig`)
+
+Validates Design E with a real font library:
+- Wraps stb_truetype via C interop
+- Implements glyph cache with LRU eviction
+- Measures rasterization speed
+- Demonstrates zero-allocation getGlyphQuads
+
+```bash
+cd experiments/text_rendering
+zig build-exe -lc -lm -I. stb_truetype_impl.c 05_stb_integration.zig -femit-bin=05_stb_integration
+./05_stb_integration
+```
 
 ---
 
@@ -320,22 +336,6 @@ Test Zig wrapper for stb_truetype:
    - Embedded: @embedFile() comptime fonts
    - Desktop: runtime loading
    - Can same interface support both?
-
----
-
-## Running Experiments
-
-```bash
-# Run all experiments
-cd /home/user/zig-gui
-zig build experiment-text
-
-# Run specific experiment
-zig run experiments/text_rendering/01_bitmap_baseline.zig
-
-# With profiling
-zig build -Denable_profiling=true experiment-text
-```
 
 ---
 

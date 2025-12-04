@@ -73,6 +73,7 @@ pub const AtlasConfig = struct {
     width: u16,
     height: u16,
     format: Format,
+    in_vram: bool = false, // If true, doesn't count against RAM budget
 
     pub const Format = enum {
         alpha8,
@@ -167,6 +168,7 @@ pub const Configs = struct {
             .width = 1024,
             .height = 1024,
             .format = .msdf_rgb24,
+            .in_vram = true, // Atlas lives in GPU memory, not RAM
         };
         pub const cache: ?GlyphCacheConfig = null; // GPU handles caching
         pub const code_size = CodeSizes.sdf_shader + CodeSizes.simple_shaping;
@@ -187,10 +189,12 @@ pub fn calculateBudget(
 ) struct {
     font_data: usize,
     atlas_size: usize,
+    atlas_in_vram: bool,
     cache_size: usize,
     code: usize,
     overhead: usize,
-    total: usize,
+    ram_total: usize, // RAM only (excludes VRAM)
+    vram_total: usize, // VRAM only
 } {
     var font_data: usize = 0;
     for (fonts) |font| {
@@ -198,15 +202,22 @@ pub fn calculateBudget(
     }
 
     const atlas_size = if (atlas) |a| a.size() else 0;
+    const atlas_in_vram = if (atlas) |a| a.in_vram else false;
     const cache_size = if (cache) |c| c.size() else 0;
+
+    // RAM total excludes VRAM atlas
+    const ram_atlas = if (atlas_in_vram) 0 else atlas_size;
+    const vram_atlas = if (atlas_in_vram) atlas_size else 0;
 
     return .{
         .font_data = font_data,
         .atlas_size = atlas_size,
+        .atlas_in_vram = atlas_in_vram,
         .cache_size = cache_size,
         .code = code_size,
         .overhead = runtime_overhead,
-        .total = font_data + atlas_size + cache_size + code_size + runtime_overhead,
+        .ram_total = font_data + ram_atlas + cache_size + code_size + runtime_overhead,
+        .vram_total = vram_atlas,
     };
 }
 
@@ -220,24 +231,34 @@ fn printBudgetAnalysis(
     budget: anytype,
 ) void {
     const total_budget = platform.totalBudget();
-    const used_percent = @as(f32, @floatFromInt(budget.total)) / @as(f32, @floatFromInt(total_budget)) * 100;
+    const used_percent = @as(f32, @floatFromInt(budget.ram_total)) / @as(f32, @floatFromInt(total_budget)) * 100;
 
     std.debug.print("\n{s} on {s}:\n", .{ config_name, platform.name() });
     std.debug.print("  Font data:     {:>8} bytes\n", .{budget.font_data});
-    std.debug.print("  Atlas:         {:>8} bytes\n", .{budget.atlas_size});
+    if (budget.atlas_in_vram) {
+        std.debug.print("  Atlas (VRAM):  {:>8} bytes (not counted)\n", .{budget.atlas_size});
+    } else {
+        std.debug.print("  Atlas (RAM):   {:>8} bytes\n", .{budget.atlas_size});
+    }
     std.debug.print("  Glyph cache:   {:>8} bytes\n", .{budget.cache_size});
     std.debug.print("  Code:          {:>8} bytes\n", .{budget.code});
     std.debug.print("  Overhead:      {:>8} bytes\n", .{budget.overhead});
     std.debug.print("  ─────────────────────────\n", .{});
-    std.debug.print("  TOTAL:         {:>8} bytes ({d:.1}% of budget)\n", .{
-        budget.total,
+    std.debug.print("  RAM TOTAL:     {:>8} bytes ({d:.1}% of budget)\n", .{
+        budget.ram_total,
         used_percent,
     });
+    if (budget.vram_total > 0) {
+        std.debug.print("  VRAM TOTAL:    {:>8} bytes ({d:.1} MB)\n", .{
+            budget.vram_total,
+            @as(f32, @floatFromInt(budget.vram_total)) / (1024 * 1024),
+        });
+    }
 
-    if (budget.total <= total_budget) {
-        std.debug.print("  Status: ✓ FITS ({} bytes remaining)\n", .{total_budget - budget.total});
+    if (budget.ram_total <= total_budget) {
+        std.debug.print("  Status: ✓ FITS ({} bytes remaining)\n", .{total_budget - budget.ram_total});
     } else {
-        std.debug.print("  Status: ✗ EXCEEDS by {} bytes\n", .{budget.total - total_budget});
+        std.debug.print("  Status: ✗ EXCEEDS by {} bytes\n", .{budget.ram_total - total_budget});
     }
 }
 
