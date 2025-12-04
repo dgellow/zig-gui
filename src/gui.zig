@@ -4,6 +4,7 @@ const RendererInterface = @import("renderer.zig").RendererInterface;
 const Color = @import("core/color.zig").Color;
 const Rect = @import("core/geometry.zig").Rect;
 const Point = @import("core/geometry.zig").Point;
+const Size = @import("core/geometry.zig").Size;
 const Paint = @import("core/paint.zig").Paint;
 const LayoutEngine = @import("layout.zig").LayoutEngine;
 const FlexStyle = @import("layout.zig").FlexStyle;
@@ -13,8 +14,12 @@ const AnimationSystem = @import("animation.zig").AnimationSystem;
 const AssetManager = @import("asset.zig").AssetManager;
 const WidgetId = @import("widget_id.zig").WidgetId;
 const IdStack = @import("widget_id.zig").IdStack;
-// const View = @import("components/view.zig").View; // Removed - moving to immediate-mode API
 const profiler = @import("profiler.zig");
+
+// Draw system imports
+const draw = @import("draw.zig");
+const DrawList = draw.DrawList;
+const DrawData = draw.DrawData;
 
 /// Maximum number of widgets (matches layout engine)
 const MAX_WIDGETS = @import("layout/engine.zig").MAX_ELEMENTS;
@@ -150,6 +155,13 @@ pub const GUI = struct {
     /// Root widget ID (created once)
     root_layout_index: ?u32 = null,
 
+    // =========================================================================
+    // Draw System (BYOR - Bring Your Own Renderer)
+    // =========================================================================
+
+    /// Draw command list - accumulates rendering commands during widget calls
+    draw_list: DrawList,
+
     /// Initialize the GUI system (headless mode, no renderer)
     /// Use initWithRenderer() if you have a platform renderer ready.
     pub fn init(allocator: std.mem.Allocator, config: GUIConfig) !*GUI {
@@ -201,6 +213,7 @@ pub const GUI = struct {
             .config = config,
             .running = true,
             .widget_to_layout = std.AutoHashMap(u32, u32).init(allocator),
+            .draw_list = DrawList.init(allocator),
         };
 
         return gui;
@@ -208,6 +221,9 @@ pub const GUI = struct {
 
     /// Clean up all resources used by the GUI
     pub fn deinit(self: *GUI) void {
+        // Clean up draw system
+        self.draw_list.deinit();
+
         // Clean up reconciliation structures
         self.widget_to_layout.deinit();
         self.id_stack.deinit();
@@ -244,6 +260,9 @@ pub const GUI = struct {
         defer profiler.endZone();
 
         self.in_frame = true;
+
+        // Clear draw list for new frame
+        self.draw_list.clear();
 
         // Reset immediate-mode cursor
         self.im_cursor_x = self.im_padding;
@@ -367,6 +386,40 @@ pub const GUI = struct {
         }
 
         self.in_frame = false;
+    }
+
+    // =========================================================================
+    // Draw System Output (BYOR - Bring Your Own Renderer)
+    // =========================================================================
+
+    /// Get draw data for rendering with a custom backend.
+    ///
+    /// Call this after endFrame() to get the accumulated draw commands
+    /// for rendering with any BYOR-compatible backend.
+    ///
+    /// Example:
+    /// ```zig
+    /// gui.beginFrame();
+    /// // ... widget calls ...
+    /// gui.endFrame();
+    ///
+    /// const draw_data = gui.getDrawData();
+    /// my_backend.render(&draw_data);
+    /// ```
+    pub fn getDrawData(self: *const GUI) DrawData {
+        return DrawData{
+            .commands = self.draw_list.getCommands(),
+            .display_size = Size{
+                .width = @floatFromInt(self.config.window_width),
+                .height = @floatFromInt(self.config.window_height),
+            },
+        };
+    }
+
+    /// Get the number of draw commands accumulated this frame.
+    /// Useful for debugging and performance monitoring.
+    pub fn getDrawCommandCount(self: *const GUI) usize {
+        return self.draw_list.commandCount();
     }
 
     // =========================================================================
@@ -629,18 +682,19 @@ pub const GUI = struct {
         const text_width = @as(f32, @floatFromInt(str.len)) * char_width;
         const text_height = self.im_line_height;
 
-        // Draw text if we have a renderer
+        const position = Point{
+            .x = self.im_cursor_x,
+            .y = self.im_cursor_y + text_height * 0.75, // Baseline offset
+        };
+
+        const text_color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+
+        // Emit to draw list (new BYOR system)
+        self.draw_list.addText(position, str, text_color);
+
+        // Also draw via legacy renderer if present
         if (self.renderer) |renderer| {
-            const position = Point{
-                .x = self.im_cursor_x,
-                .y = self.im_cursor_y + text_height * 0.75, // Baseline offset
-            };
-
-            const paint = Paint{
-                .color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 },
-            };
-
-            renderer.vtable.drawText(renderer, str, position, paint);
+            renderer.vtable.drawText(renderer, str, position, Paint{ .color = text_color });
         }
 
         // Advance cursor
@@ -721,30 +775,29 @@ pub const GUI = struct {
             self.im_clicked_id = final_id;
         }
 
-        // Draw button if we have a renderer
+        // Determine colors based on state
+        const bg_color = if (is_active and is_hot)
+            Color{ .r = 80, .g = 80, .b = 120, .a = 255 } // Pressed
+        else if (is_hot)
+            Color{ .r = 70, .g = 70, .b = 100, .a = 255 } // Hover
+        else
+            Color{ .r = 50, .g = 50, .b = 80, .a = 255 }; // Normal
+
+        const text_color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+
+        const text_position = Point{
+            .x = rect.x + self.im_padding,
+            .y = rect.y + button_height * 0.7,
+        };
+
+        // Emit to draw list (new BYOR system)
+        self.draw_list.addFilledRectEx(rect, bg_color, 4.0);
+        self.draw_list.addText(text_position, display_label, text_color);
+
+        // Also draw via legacy renderer if present
         if (self.renderer) |renderer| {
-            // Background color based on state
-            const bg_color = if (is_active and is_hot)
-                Color{ .r = 80, .g = 80, .b = 120, .a = 255 } // Pressed
-            else if (is_hot)
-                Color{ .r = 70, .g = 70, .b = 100, .a = 255 } // Hover
-            else
-                Color{ .r = 50, .g = 50, .b = 80, .a = 255 }; // Normal
-
-            const bg_paint = Paint{ .color = bg_color };
-            renderer.vtable.drawRoundRect(renderer, rect, 4.0, bg_paint);
-
-            // Text
-            const text_position = Point{
-                .x = rect.x + self.im_padding,
-                .y = rect.y + button_height * 0.7,
-            };
-
-            const text_paint = Paint{
-                .color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 },
-            };
-
-            renderer.vtable.drawText(renderer, display_label, text_position, text_paint);
+            renderer.vtable.drawRoundRect(renderer, rect, 4.0, Paint{ .color = bg_color });
+            renderer.vtable.drawText(renderer, display_label, text_position, Paint{ .color = text_color });
         }
 
         // Advance cursor
@@ -887,17 +940,30 @@ pub const GUI = struct {
             toggled = true;
         }
 
-        // Draw checkbox if we have a renderer
-        if (self.renderer) |renderer| {
-            // Background
-            const bg_color = if (is_hot)
-                Color{ .r = 70, .g = 70, .b = 100, .a = 255 }
-            else
-                Color{ .r = 50, .g = 50, .b = 80, .a = 255 };
+        // Determine colors based on state
+        const bg_color = if (is_hot)
+            Color{ .r = 70, .g = 70, .b = 100, .a = 255 }
+        else
+            Color{ .r = 50, .g = 50, .b = 80, .a = 255 };
 
+        // Emit to draw list (new BYOR system)
+        self.draw_list.addFilledRectEx(rect, bg_color, 3.0);
+
+        if (checked) {
+            const inner_rect = Rect{
+                .x = rect.x + 4,
+                .y = rect.y + 4,
+                .width = size - 8,
+                .height = size - 8,
+            };
+            const check_color = Color{ .r = 100, .g = 200, .b = 100, .a = 255 };
+            self.draw_list.addFilledRectEx(inner_rect, check_color, 2.0);
+        }
+
+        // Also draw via legacy renderer if present
+        if (self.renderer) |renderer| {
             renderer.vtable.drawRoundRect(renderer, rect, 3.0, Paint{ .color = bg_color });
 
-            // Checkmark if checked
             if (checked) {
                 const inner_rect = Rect{
                     .x = rect.x + 4,
@@ -928,8 +994,13 @@ pub const GUI = struct {
             .height = 1,
         };
 
+        const color = Color{ .r = 80, .g = 80, .b = 100, .a = 255 };
+
+        // Emit to draw list (new BYOR system)
+        self.draw_list.addFilledRect(rect, color);
+
+        // Also draw via legacy renderer if present
         if (self.renderer) |renderer| {
-            const color = Color{ .r = 80, .g = 80, .b = 100, .a = 255 };
             renderer.vtable.drawRect(renderer, rect, Paint{ .color = color });
         }
 
@@ -990,45 +1061,61 @@ pub const GUI = struct {
             focused = true;
         }
 
-        // Draw text input if we have a renderer
+        // Determine colors based on state
+        const bg_color = if (is_active)
+            Color{ .r = 60, .g = 60, .b = 90, .a = 255 } // Focused
+        else if (is_hot)
+            Color{ .r = 55, .g = 55, .b = 85, .a = 255 } // Hover
+        else
+            Color{ .r = 40, .g = 40, .b = 70, .a = 255 }; // Normal
+
+        const text_color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+        const cursor_color = Color{ .r = 200, .g = 200, .b = 255, .a = 255 };
+
+        // Emit to draw list (new BYOR system)
+        self.draw_list.addFilledRectEx(rect, bg_color, 3.0);
+
+        if (current_text.len > 0) {
+            const text_position = Point{
+                .x = rect.x + self.im_padding / 2,
+                .y = rect.y + input_height * 0.7,
+            };
+            self.draw_list.addText(text_position, current_text, text_color);
+        }
+
+        if (is_active) {
+            const cursor_x = rect.x + self.im_padding / 2 +
+                @as(f32, @floatFromInt(current_text.len)) * 8.0;
+            const cursor_rect = Rect{
+                .x = cursor_x,
+                .y = rect.y + 4,
+                .width = 2,
+                .height = input_height - 8,
+            };
+            self.draw_list.addFilledRect(cursor_rect, cursor_color);
+        }
+
+        // Also draw via legacy renderer if present
         if (self.renderer) |renderer| {
-            // Background color based on state
-            const bg_color = if (is_active)
-                Color{ .r = 60, .g = 60, .b = 90, .a = 255 } // Focused
-            else if (is_hot)
-                Color{ .r = 55, .g = 55, .b = 85, .a = 255 } // Hover
-            else
-                Color{ .r = 40, .g = 40, .b = 70, .a = 255 }; // Normal
+            renderer.vtable.drawRoundRect(renderer, rect, 3.0, Paint{ .color = bg_color });
 
-            const bg_paint = Paint{ .color = bg_color };
-            renderer.vtable.drawRoundRect(renderer, rect, 3.0, bg_paint);
-
-            // Draw current text
             if (current_text.len > 0) {
                 const text_position = Point{
                     .x = rect.x + self.im_padding / 2,
                     .y = rect.y + input_height * 0.7,
                 };
-
-                const text_paint = Paint{
-                    .color = Color{ .r = 255, .g = 255, .b = 255, .a = 255 },
-                };
-
-                renderer.vtable.drawText(renderer, current_text, text_position, text_paint);
+                renderer.vtable.drawText(renderer, current_text, text_position, Paint{ .color = text_color });
             }
 
-            // Draw cursor if focused
             if (is_active) {
                 const cursor_x = rect.x + self.im_padding / 2 +
-                    @as(f32, @floatFromInt(current_text.len)) * 8.0; // Approximate char width
+                    @as(f32, @floatFromInt(current_text.len)) * 8.0;
                 const cursor_rect = Rect{
                     .x = cursor_x,
                     .y = rect.y + 4,
                     .width = 2,
                     .height = input_height - 8,
                 };
-
-                const cursor_color = Color{ .r = 200, .g = 200, .b = 255, .a = 255 };
                 renderer.vtable.drawRect(renderer, cursor_rect, Paint{ .color = cursor_color });
             }
         }
@@ -1290,4 +1377,134 @@ test "GUI text input focus" {
     gui.setMouseButton(false);
 
     try gui.endFrame();
+}
+
+// ============================================================================
+// Draw System Integration Tests
+// ============================================================================
+
+test "GUI emits draw commands for widgets" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    // Render some widgets
+    try gui.text("Hello, World!", .{});
+    gui.button("Click me");
+    _ = gui.checkbox("my_checkbox", true);
+    gui.separator();
+
+    try gui.endFrame();
+
+    // Should have accumulated draw commands
+    const draw_data = gui.getDrawData();
+    try std.testing.expect(!draw_data.isEmpty());
+
+    // Count expected commands:
+    // - text: 1 text command
+    // - button: 1 filled rect + 1 text = 2 commands
+    // - checkbox (checked): 1 filled rect + 1 inner rect = 2 commands
+    // - separator: 1 filled rect
+    // Total: 6 commands
+    try std.testing.expectEqual(@as(usize, 6), draw_data.commandCount());
+}
+
+test "GUI draw commands have correct primitives" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    try gui.beginFrame();
+
+    gui.button("Test");
+
+    try gui.endFrame();
+
+    const draw_data = gui.getDrawData();
+    const commands = draw_data.commands;
+
+    // Button emits: filled rect (background) + text (label)
+    try std.testing.expectEqual(@as(usize, 2), commands.len);
+
+    // First command should be a filled rect
+    try std.testing.expect(commands[0].primitive == .fill_rect);
+
+    // Second command should be text
+    try std.testing.expect(commands[1].primitive == .text);
+}
+
+test "GUI draw list clears between frames" {
+    const gui = try GUI.init(std.testing.allocator, .{});
+    defer gui.deinit();
+
+    // Frame 1
+    try gui.beginFrame();
+    gui.button("Button1");
+    try gui.endFrame();
+    const count1 = gui.getDrawCommandCount();
+
+    // Frame 2 (with more widgets)
+    try gui.beginFrame();
+    gui.button("Button2");
+    gui.button("Button3");
+    try gui.endFrame();
+    const count2 = gui.getDrawCommandCount();
+
+    // Frame 2 should have more commands than frame 1
+    // And frame 2 count should NOT include frame 1 commands
+    try std.testing.expect(count2 > count1);
+    try std.testing.expectEqual(@as(usize, 4), count2); // 2 buttons * 2 commands each
+}
+
+test "GUI + SoftwareBackend integration" {
+    const gui = try GUI.init(std.testing.allocator, .{
+        .window_width = 200,
+        .window_height = 150,
+    });
+    defer gui.deinit();
+
+    // Create software backend
+    var backend = try draw.SoftwareBackend.initAlloc(std.testing.allocator, 200, 150);
+    defer backend.deinit(std.testing.allocator);
+    backend.clear_color = 0xFF1a1a2e; // Dark background
+
+    // Render a frame with widgets
+    try gui.beginFrame();
+    gui.button("Hello");
+    gui.separator();
+    _ = gui.checkbox("check", true);
+    try gui.endFrame();
+
+    // Get draw data and render to software backend
+    const draw_data = gui.getDrawData();
+    const iface = backend.interface();
+
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Verify pixels were rendered
+    // Background should be dark (clear color)
+    const bg_pixel = backend.getPixel(0, 0);
+    try std.testing.expectEqual(@as(u32, 0xFF1a1a2e), bg_pixel);
+
+    // Button should be at cursor position (im_padding=8, im_cursor_y=8)
+    // Button background color is 0x323250 (RGB 50, 50, 80)
+    const button_pixel = backend.getPixel(15, 15);
+    try std.testing.expect(button_pixel != bg_pixel); // Something was drawn there
+}
+
+test "GUI display size matches config" {
+    const gui = try GUI.init(std.testing.allocator, .{
+        .window_width = 1920,
+        .window_height = 1080,
+    });
+    defer gui.deinit();
+
+    try gui.beginFrame();
+    try gui.endFrame();
+
+    const draw_data = gui.getDrawData();
+    try std.testing.expectEqual(@as(f32, 1920), draw_data.display_size.width);
+    try std.testing.expectEqual(@as(f32, 1080), draw_data.display_size.height);
 }

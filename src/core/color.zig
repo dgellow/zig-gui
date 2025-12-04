@@ -13,6 +13,6 @@ pub const Color = struct {
     }
 
     pub fn toHex(self: Color) u32 {
-        return (self.r << 24) | (self.g << 16) | (self.b << 8) | self.a;
+        return (@as(u32, self.a) << 24) | (@as(u32, self.r) << 16) | (@as(u32, self.g) << 8) | @as(u32, self.b);
     }
 };

@@ -6,6 +6,11 @@ zig-out
 *.so
 *.dll
 *.lib
+*.ppm
+
+# Generated demo outputs (except docs/ which we commit for README)
+/gui_demo.png
+/render_demo.png
 
 **/.claude/settings.local.json
 profile.json

@@ -97,6 +97,33 @@ pub fn build(b: *std.Build) void {
     const profiling_demo_step = b.step("profiling-demo", "Run profiling demo (zero-cost profiling system)");
     profiling_demo_step.dependOn(&profiling_demo_run.step);
 
+    // GUI demo (GUI widgets → DrawList → SoftwareBackend → PPM)
+    const gui_demo_exe = b.addExecutable(.{
+        .name = "gui_demo",
+        .root_source_file = b.path("examples/gui_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gui_demo_exe.root_module.addImport("zig-gui", zig_gui_mod);
+    b.installArtifact(gui_demo_exe);
+
+    const gui_demo_run = b.addRunArtifact(gui_demo_exe);
+    gui_demo_run.step.dependOn(b.getInstallStep());
+
+    const gui_demo_step = b.step("gui-demo", "Run GUI integration demo (outputs PPM image)");
+    gui_demo_step.dependOn(&gui_demo_run.step);
+
+    // Generate docs image (runs gui-demo and converts to PNG for README)
+    const convert_to_png = b.addSystemCommand(&.{
+        "convert",
+        "gui_demo.ppm",
+        "docs/gui_demo.png",
+    });
+    convert_to_png.step.dependOn(&gui_demo_run.step);
+
+    const update_docs_step = b.step("update-docs", "Regenerate docs/gui_demo.png for README");
+    update_docs_step.dependOn(&convert_to_png.step);
+
     // Rendering benchmark (software renderer with actual pixel drawing)
     const rendering_benchmark_exe = b.addExecutable(.{
         .name = "rendering_benchmark",

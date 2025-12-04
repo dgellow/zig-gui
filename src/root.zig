@@ -45,8 +45,53 @@ pub const GUI = @import("gui.zig").GUI;
 /// GUI configuration
 pub const GUIConfig = @import("gui.zig").GUIConfig;
 
-/// Renderer interface for custom backends
+/// Renderer interface for custom backends (legacy)
 pub const RendererInterface = @import("renderer.zig").RendererInterface;
+
+// =============================================================================
+// Draw System - BYOR (Bring Your Own Renderer)
+// =============================================================================
+//
+// The draw system outputs draw commands; users implement rendering however they want.
+// Inspired by Dear ImGui's backend system.
+//
+// Pipeline: Widget Calls → Layout Compute → Draw Generation → Backend Render
+//
+// Example:
+// ```zig
+// var draw_list = draw.DrawList.init(allocator);
+// defer draw_list.deinit();
+//
+// draw_list.addFilledRect(.{ .x = 0, .y = 0, .width = 100, .height = 50 }, Color.fromRGB(255, 0, 0));
+// draw_list.addText(.{ .x = 10, .y = 10 }, "Hello", Color.fromRGB(0, 0, 0));
+//
+// const draw_data = draw.DrawData{
+//     .commands = draw_list.getCommands(),
+//     .display_size = .{ .width = 800, .height = 600 },
+// };
+//
+// backend.render(&draw_data);
+// ```
+//
+// See DESIGN.md "Draw System" section for full documentation.
+
+pub const draw = struct {
+    pub const DrawPrimitive = @import("draw.zig").DrawPrimitive;
+    pub const DrawCommand = @import("draw.zig").DrawCommand;
+    pub const DrawList = @import("draw.zig").DrawList;
+    pub const DrawData = @import("draw.zig").DrawData;
+    pub const RenderBackend = @import("draw.zig").RenderBackend;
+    pub const WidgetRenderInfo = @import("draw.zig").WidgetRenderInfo;
+
+    // Backends
+    pub const NullBackend = @import("draw.zig").NullBackend;
+    pub const SoftwareBackend = @import("draw.zig").SoftwareBackend;
+
+    // Helper functions
+    pub const rectIntersect = @import("draw.zig").rectIntersect;
+    pub const colorToARGB = @import("draw.zig").colorToARGB;
+    pub const colorToRGBA = @import("draw.zig").colorToRGBA;
+};
 
 // =============================================================================
 // State Management - Tracked Signals
