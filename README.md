@@ -9,6 +9,16 @@ A high-performance UI library combining event-driven execution, immediate-mode A
   <img src="./mascot.png" alt="Zeph the Zalamander - zig-gui mascot" />
 </p>
 
+## Rendered Output
+
+Real pixel output from the BYOR (Bring Your Own Renderer) draw system:
+
+<p align="center">
+  <img src="./docs/gui_demo.png" alt="GUI Demo - buttons, checkboxes, separators rendered to pixels" />
+</p>
+
+*GUI widgets → DrawList → SoftwareBackend → pixels. Generated with `zig build gui-demo`.*
+
 ## Goals
 
 - **0% idle CPU** on desktop (event-driven, blocks on input)
@@ -177,7 +187,11 @@ zig_gui_platform_destroy(platform);
 - [x] Event-driven execution
 - [x] Layout engine integration
 - [x] Basic immediate-mode API
+- [x] BYOR Draw System (DrawList, DrawData, RenderBackend)
+- [x] SoftwareBackend (pixel rendering, clipping, alpha blending)
+- [x] GUI → Draw System integration
 - [ ] SDL platform backend
+- [ ] Text rendering (bitmap font)
 
 **Phase 2: Developer Experience**
 - [ ] Hot reload
