@@ -97,6 +97,22 @@ pub fn build(b: *std.Build) void {
     const profiling_demo_step = b.step("profiling-demo", "Run profiling demo (zero-cost profiling system)");
     profiling_demo_step.dependOn(&profiling_demo_run.step);
 
+    // Render demo (BYOR draw system demo - outputs PPM image)
+    const render_demo_exe = b.addExecutable(.{
+        .name = "render_demo",
+        .root_source_file = b.path("examples/render_demo.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    render_demo_exe.root_module.addImport("zig-gui", zig_gui_mod);
+    b.installArtifact(render_demo_exe);
+
+    const render_demo_run = b.addRunArtifact(render_demo_exe);
+    render_demo_run.step.dependOn(b.getInstallStep());
+
+    const render_demo_step = b.step("render-demo", "Run render demo (outputs PPM image)");
+    render_demo_step.dependOn(&render_demo_run.step);
+
     // Rendering benchmark (software renderer with actual pixel drawing)
     const rendering_benchmark_exe = b.addExecutable(.{
         .name = "rendering_benchmark",

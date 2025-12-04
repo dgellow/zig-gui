@@ -82,7 +82,10 @@ pub const draw = struct {
     pub const DrawData = @import("draw.zig").DrawData;
     pub const RenderBackend = @import("draw.zig").RenderBackend;
     pub const WidgetRenderInfo = @import("draw.zig").WidgetRenderInfo;
+
+    // Backends
     pub const NullBackend = @import("draw.zig").NullBackend;
+    pub const SoftwareBackend = @import("draw.zig").SoftwareBackend;
 
     // Helper functions
     pub const rectIntersect = @import("draw.zig").rectIntersect;

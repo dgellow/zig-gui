@@ -240,8 +240,8 @@ pub const DrawList = struct {
     }
 
     pub fn popLayer(self: *DrawList) void {
-        if (self.layer_stack.pop()) |prev| {
-            self.current_layer = prev;
+        if (self.layer_stack.len > 0) {
+            self.current_layer = self.layer_stack.pop();
         }
     }
 
@@ -465,6 +465,286 @@ pub const NullBackend = struct {
 };
 
 // =============================================================================
+// Software Rasterizer Backend
+// =============================================================================
+
+/// A software rasterizer that renders to a pixel buffer.
+/// Suitable for embedded systems, headless testing, and image output.
+pub const SoftwareBackend = struct {
+    pixels: []u32, // ARGB format
+    width: u32,
+    height: u32,
+    clear_color: u32 = 0xFF000000, // Opaque black
+
+    pub fn init(pixels: []u32, width: u32, height: u32) SoftwareBackend {
+        return .{
+            .pixels = pixels,
+            .width = width,
+            .height = height,
+        };
+    }
+
+    /// Create a backend with its own allocated buffer
+    pub fn initAlloc(allocator: std.mem.Allocator, width: u32, height: u32) !SoftwareBackend {
+        const pixels = try allocator.alloc(u32, width * height);
+        return .{
+            .pixels = pixels,
+            .width = width,
+            .height = height,
+        };
+    }
+
+    pub fn deinit(self: *SoftwareBackend, allocator: std.mem.Allocator) void {
+        allocator.free(self.pixels);
+    }
+
+    pub fn interface(self: *SoftwareBackend) RenderBackend {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = RenderBackend.VTable{
+        .beginFrame = beginFrameImpl,
+        .render = renderImpl,
+        .endFrame = endFrameImpl,
+        .createTexture = createTextureImpl,
+        .destroyTexture = destroyTextureImpl,
+        .measureText = measureTextImpl,
+    };
+
+    fn beginFrameImpl(ptr: *anyopaque, _: *const DrawData) void {
+        const self: *SoftwareBackend = @ptrCast(@alignCast(ptr));
+        // Clear to background color
+        @memset(self.pixels, self.clear_color);
+    }
+
+    fn renderImpl(ptr: *anyopaque, data: *const DrawData) void {
+        const self: *SoftwareBackend = @ptrCast(@alignCast(ptr));
+
+        for (data.commands) |cmd| {
+            switch (cmd.primitive) {
+                .fill_rect => |r| self.renderFillRect(r, cmd.clip_rect),
+                .stroke_rect => |r| self.renderStrokeRect(r, cmd.clip_rect),
+                .line => |l| self.renderLine(l, cmd.clip_rect),
+                .text => {}, // Text rendering requires font atlas - skip for now
+                .vertices => {}, // Complex - skip for basic implementation
+            }
+        }
+    }
+
+    fn endFrameImpl(_: *anyopaque) void {}
+
+    fn createTextureImpl(_: *anyopaque, _: u32, _: u32, _: []const u8) u32 {
+        return 1;
+    }
+
+    fn destroyTextureImpl(_: *anyopaque, _: u32) void {}
+
+    fn measureTextImpl(_: *anyopaque, text: []const u8, font_size: f32, _: u16) Size {
+        const char_width = font_size * 0.6;
+        return Size{
+            .width = @as(f32, @floatFromInt(text.len)) * char_width,
+            .height = font_size,
+        };
+    }
+
+    // === Rendering primitives ===
+
+    fn renderFillRect(self: *SoftwareBackend, r: DrawPrimitive.FillRect, clip: ?Rect) void {
+        const bounds = self.clipRect(r.rect, clip);
+        if (bounds.width <= 0 or bounds.height <= 0) return;
+
+        const color = colorToARGB(r.color);
+        const x0 = self.clampX(bounds.x);
+        const y0 = self.clampY(bounds.y);
+        const x1 = self.clampX(bounds.x + bounds.width);
+        const y1 = self.clampY(bounds.y + bounds.height);
+
+        var y = y0;
+        while (y < y1) : (y += 1) {
+            var x = x0;
+            while (x < x1) : (x += 1) {
+                self.blendPixel(x, y, color);
+            }
+        }
+    }
+
+    fn renderStrokeRect(self: *SoftwareBackend, r: DrawPrimitive.StrokeRect, clip: ?Rect) void {
+        const bounds = self.clipRect(r.rect, clip);
+        if (bounds.width <= 0 or bounds.height <= 0) return;
+
+        const color = colorToARGB(r.color);
+        const stroke = @max(1, @as(u32, @intFromFloat(r.stroke_width)));
+
+        const x0 = self.clampX(bounds.x);
+        const y0 = self.clampY(bounds.y);
+        const x1 = self.clampX(bounds.x + bounds.width);
+        const y1 = self.clampY(bounds.y + bounds.height);
+
+        // Top edge
+        self.fillHorizontalLine(x0, x1, y0, stroke, color);
+        // Bottom edge
+        if (y1 > y0 + stroke) {
+            self.fillHorizontalLine(x0, x1, y1 - stroke, stroke, color);
+        }
+        // Left edge
+        self.fillVerticalLine(x0, y0, y1, stroke, color);
+        // Right edge
+        if (x1 > x0 + stroke) {
+            self.fillVerticalLine(x1 - stroke, y0, y1, stroke, color);
+        }
+    }
+
+    fn renderLine(self: *SoftwareBackend, l: DrawPrimitive.LineDraw, clip: ?Rect) void {
+        _ = clip; // TODO: proper line clipping
+
+        const color = colorToARGB(l.color);
+        const x0_f = l.start.x;
+        const y0_f = l.start.y;
+        const x1_f = l.end.x;
+        const y1_f = l.end.y;
+
+        // Bresenham's line algorithm
+        const x0_i: i32 = @intFromFloat(x0_f);
+        const y0_i: i32 = @intFromFloat(y0_f);
+        const x1_i: i32 = @intFromFloat(x1_f);
+        const y1_i: i32 = @intFromFloat(y1_f);
+
+        const dx: i32 = @intCast(@abs(x1_i - x0_i));
+        const dy: i32 = -@as(i32, @intCast(@abs(y1_i - y0_i)));
+        const sx: i32 = if (x0_i < x1_i) 1 else -1;
+        const sy: i32 = if (y0_i < y1_i) 1 else -1;
+        var err = dx + dy;
+
+        var x = x0_i;
+        var y = y0_i;
+
+        while (true) {
+            if (x >= 0 and y >= 0 and x < @as(i32, @intCast(self.width)) and y < @as(i32, @intCast(self.height))) {
+                self.blendPixel(@intCast(x), @intCast(y), color);
+            }
+
+            if (x == x1_i and y == y1_i) break;
+
+            const e2 = 2 * err;
+            if (e2 >= dy) {
+                err += dy;
+                x += sx;
+            }
+            if (e2 <= dx) {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
+    // === Helper functions ===
+
+    fn clipRect(self: *SoftwareBackend, rect: Rect, clip: ?Rect) Rect {
+        var result = rect;
+        if (clip) |c| {
+            result = rectIntersect(result, c);
+        }
+        // Also clip to screen bounds
+        return rectIntersect(result, Rect{
+            .x = 0,
+            .y = 0,
+            .width = @floatFromInt(self.width),
+            .height = @floatFromInt(self.height),
+        });
+    }
+
+    fn clampX(self: *SoftwareBackend, x: f32) u32 {
+        if (x < 0) return 0;
+        const xi: u32 = @intFromFloat(x);
+        return @min(xi, self.width);
+    }
+
+    fn clampY(self: *SoftwareBackend, y: f32) u32 {
+        if (y < 0) return 0;
+        const yi: u32 = @intFromFloat(y);
+        return @min(yi, self.height);
+    }
+
+    fn fillHorizontalLine(self: *SoftwareBackend, x0: u32, x1: u32, y: u32, thickness: u32, color: u32) void {
+        var yi = y;
+        const y_end = @min(y + thickness, self.height);
+        while (yi < y_end) : (yi += 1) {
+            var xi = x0;
+            while (xi < x1) : (xi += 1) {
+                self.blendPixel(xi, yi, color);
+            }
+        }
+    }
+
+    fn fillVerticalLine(self: *SoftwareBackend, x: u32, y0: u32, y1: u32, thickness: u32, color: u32) void {
+        var xi = x;
+        const x_end = @min(x + thickness, self.width);
+        while (xi < x_end) : (xi += 1) {
+            var yi = y0;
+            while (yi < y1) : (yi += 1) {
+                self.blendPixel(xi, yi, color);
+            }
+        }
+    }
+
+    fn blendPixel(self: *SoftwareBackend, x: u32, y: u32, color: u32) void {
+        if (x >= self.width or y >= self.height) return;
+
+        const idx = y * self.width + x;
+        const src_a = (color >> 24) & 0xFF;
+
+        if (src_a == 255) {
+            // Fully opaque - just write
+            self.pixels[idx] = color;
+        } else if (src_a > 0) {
+            // Alpha blend
+            const dst = self.pixels[idx];
+            const dst_r = (dst >> 16) & 0xFF;
+            const dst_g = (dst >> 8) & 0xFF;
+            const dst_b = dst & 0xFF;
+
+            const src_r = (color >> 16) & 0xFF;
+            const src_g = (color >> 8) & 0xFF;
+            const src_b = color & 0xFF;
+
+            const inv_a = 255 - src_a;
+            const out_r = (src_r * src_a + dst_r * inv_a) / 255;
+            const out_g = (src_g * src_a + dst_g * inv_a) / 255;
+            const out_b = (src_b * src_a + dst_b * inv_a) / 255;
+
+            self.pixels[idx] = 0xFF000000 | (out_r << 16) | (out_g << 8) | out_b;
+        }
+    }
+
+    // === Image output ===
+
+    /// Write the framebuffer to a PPM file (P3 format - ASCII)
+    pub fn writePPM(self: *const SoftwareBackend, writer: anytype) !void {
+        try writer.print("P3\n{} {}\n255\n", .{ self.width, self.height });
+
+        for (0..self.height) |y| {
+            for (0..self.width) |x| {
+                const pixel = self.pixels[y * self.width + x];
+                const r = (pixel >> 16) & 0xFF;
+                const g = (pixel >> 8) & 0xFF;
+                const b = pixel & 0xFF;
+                try writer.print("{} {} {} ", .{ r, g, b });
+            }
+            try writer.print("\n", .{});
+        }
+    }
+
+    /// Get pixel at (x, y) - for testing
+    pub fn getPixel(self: *const SoftwareBackend, x: u32, y: u32) u32 {
+        if (x >= self.width or y >= self.height) return 0;
+        return self.pixels[y * self.width + x];
+    }
+};
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -644,4 +924,262 @@ test "DrawData isEmpty" {
         .display_size = .{ .width = 800, .height = 600 },
     };
     try std.testing.expect(!non_empty_data.isEmpty());
+}
+
+// =============================================================================
+// SoftwareBackend Tests
+// =============================================================================
+
+test "SoftwareBackend fills rectangle" {
+    const allocator = std.testing.allocator;
+    var backend = try SoftwareBackend.initAlloc(allocator, 100, 100);
+    defer backend.deinit(allocator);
+
+    var draw_list = DrawList.init(allocator);
+    defer draw_list.deinit();
+
+    // Draw a red rectangle at (10, 10) size 20x20
+    draw_list.addFilledRect(
+        .{ .x = 10, .y = 10, .width = 20, .height = 20 },
+        Color.fromRGB(255, 0, 0),
+    );
+
+    const draw_data = DrawData{
+        .commands = draw_list.getCommands(),
+        .display_size = .{ .width = 100, .height = 100 },
+    };
+
+    const iface = backend.interface();
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Check pixel inside rectangle is red (0xFFFF0000 in ARGB)
+    const inside = backend.getPixel(15, 15);
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), inside);
+
+    // Check pixel outside rectangle is black (clear color)
+    const outside = backend.getPixel(5, 5);
+    try std.testing.expectEqual(@as(u32, 0xFF000000), outside);
+}
+
+test "SoftwareBackend strokes rectangle" {
+    const allocator = std.testing.allocator;
+    var backend = try SoftwareBackend.initAlloc(allocator, 100, 100);
+    defer backend.deinit(allocator);
+
+    var draw_list = DrawList.init(allocator);
+    defer draw_list.deinit();
+
+    // Draw a green stroked rectangle at (10, 10) size 30x30, stroke width 2
+    draw_list.addStrokeRectEx(
+        .{ .x = 10, .y = 10, .width = 30, .height = 30 },
+        Color.fromRGB(0, 255, 0),
+        2,
+        0,
+    );
+
+    const draw_data = DrawData{
+        .commands = draw_list.getCommands(),
+        .display_size = .{ .width = 100, .height = 100 },
+    };
+
+    const iface = backend.interface();
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Check pixel on top edge is green
+    const top_edge = backend.getPixel(20, 10);
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), top_edge);
+
+    // Check pixel on left edge is green
+    const left_edge = backend.getPixel(10, 20);
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), left_edge);
+
+    // Check pixel inside (not on edge) is black
+    const inside = backend.getPixel(25, 25);
+    try std.testing.expectEqual(@as(u32, 0xFF000000), inside);
+}
+
+test "SoftwareBackend draws line" {
+    const allocator = std.testing.allocator;
+    var backend = try SoftwareBackend.initAlloc(allocator, 100, 100);
+    defer backend.deinit(allocator);
+
+    var draw_list = DrawList.init(allocator);
+    defer draw_list.deinit();
+
+    // Draw a diagonal blue line from (0,0) to (50,50)
+    draw_list.addLine(
+        .{ .x = 0, .y = 0 },
+        .{ .x = 50, .y = 50 },
+        Color.fromRGB(0, 0, 255),
+        1,
+    );
+
+    const draw_data = DrawData{
+        .commands = draw_list.getCommands(),
+        .display_size = .{ .width = 100, .height = 100 },
+    };
+
+    const iface = backend.interface();
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Diagonal line should have pixels along y=x
+    const on_line = backend.getPixel(25, 25);
+    try std.testing.expectEqual(@as(u32, 0xFF0000FF), on_line);
+
+    // Off the line should be black
+    const off_line = backend.getPixel(25, 10);
+    try std.testing.expectEqual(@as(u32, 0xFF000000), off_line);
+}
+
+test "SoftwareBackend respects clipping" {
+    const allocator = std.testing.allocator;
+    var backend = try SoftwareBackend.initAlloc(allocator, 100, 100);
+    defer backend.deinit(allocator);
+
+    var draw_list = DrawList.init(allocator);
+    defer draw_list.deinit();
+
+    // Push a clip rect that only allows 20x20 starting at (30,30)
+    draw_list.pushClip(.{ .x = 30, .y = 30, .width = 20, .height = 20 });
+
+    // Try to draw a large rectangle - should be clipped
+    draw_list.addFilledRect(
+        .{ .x = 0, .y = 0, .width = 100, .height = 100 },
+        Color.fromRGB(255, 255, 0),
+    );
+
+    const draw_data = DrawData{
+        .commands = draw_list.getCommands(),
+        .display_size = .{ .width = 100, .height = 100 },
+    };
+
+    const iface = backend.interface();
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Pixel inside clip region should be yellow
+    const inside_clip = backend.getPixel(35, 35);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFF00), inside_clip);
+
+    // Pixel outside clip region should be black (not rendered)
+    const outside_clip = backend.getPixel(10, 10);
+    try std.testing.expectEqual(@as(u32, 0xFF000000), outside_clip);
+}
+
+test "SoftwareBackend alpha blending" {
+    const allocator = std.testing.allocator;
+    var backend = try SoftwareBackend.initAlloc(allocator, 100, 100);
+    defer backend.deinit(allocator);
+
+    var draw_list = DrawList.init(allocator);
+    defer draw_list.deinit();
+
+    // Draw solid red background
+    draw_list.addFilledRect(
+        .{ .x = 0, .y = 0, .width = 100, .height = 100 },
+        Color.fromRGB(255, 0, 0),
+    );
+
+    // Draw semi-transparent blue on top (50% alpha)
+    draw_list.addFilledRect(
+        .{ .x = 25, .y = 25, .width = 50, .height = 50 },
+        Color.fromRGBA(0, 0, 255, 128),
+    );
+
+    const draw_data = DrawData{
+        .commands = draw_list.getCommands(),
+        .display_size = .{ .width = 100, .height = 100 },
+    };
+
+    const iface = backend.interface();
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Outside the blue rect - pure red
+    const pure_red = backend.getPixel(10, 10);
+    try std.testing.expectEqual(@as(u32, 0xFFFF0000), pure_red);
+
+    // Inside the blue rect - blended (red + blue at ~50% = purple-ish)
+    const blended = backend.getPixel(50, 50);
+    const r = (blended >> 16) & 0xFF;
+    const g = (blended >> 8) & 0xFF;
+    const b = blended & 0xFF;
+
+    // Red should be reduced, blue should be present
+    try std.testing.expect(r > 100 and r < 200); // ~127
+    try std.testing.expectEqual(@as(u32, 0), g);
+    try std.testing.expect(b > 100 and b < 200); // ~128
+}
+
+test "SoftwareBackend end-to-end with multiple primitives" {
+    const allocator = std.testing.allocator;
+    var backend = try SoftwareBackend.initAlloc(allocator, 200, 150);
+    defer backend.deinit(allocator);
+
+    backend.clear_color = 0xFF333333; // Dark gray background
+
+    var draw_list = DrawList.init(allocator);
+    defer draw_list.deinit();
+
+    // Button background
+    draw_list.addFilledRectEx(
+        .{ .x = 20, .y = 20, .width = 160, .height = 40 },
+        Color.fromRGB(66, 133, 244), // Google blue
+        0,
+    );
+
+    // Button border
+    draw_list.addStrokeRect(
+        .{ .x = 20, .y = 20, .width = 160, .height = 40 },
+        Color.fromRGB(255, 255, 255),
+        2,
+    );
+
+    // A line underneath
+    draw_list.addLine(
+        .{ .x = 20, .y = 80 },
+        .{ .x = 180, .y = 80 },
+        Color.fromRGB(200, 200, 200),
+        1,
+    );
+
+    // Another box
+    draw_list.addFilledRect(
+        .{ .x = 20, .y = 100, .width = 60, .height = 30 },
+        Color.fromRGB(234, 67, 53), // Google red
+    );
+
+    const draw_data = DrawData{
+        .commands = draw_list.getCommands(),
+        .display_size = .{ .width = 200, .height = 150 },
+    };
+
+    const iface = backend.interface();
+    iface.beginFrame(&draw_data);
+    iface.render(&draw_data);
+    iface.endFrame();
+
+    // Verify some pixels
+    // Background (outside all rects)
+    try std.testing.expectEqual(@as(u32, 0xFF333333), backend.getPixel(5, 5));
+
+    // Blue button interior
+    const blue = backend.getPixel(100, 40);
+    try std.testing.expectEqual(@as(u32, 0xFF4285F4), blue);
+
+    // Red box
+    const red = backend.getPixel(50, 115);
+    try std.testing.expectEqual(@as(u32, 0xFFEA4335), red);
+
+    // Line
+    const line_pixel = backend.getPixel(100, 80);
+    try std.testing.expectEqual(@as(u32, 0xFFC8C8C8), line_pixel);
 }
