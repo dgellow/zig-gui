@@ -208,6 +208,3 @@ zig_gui_platform_destroy(platform);
 - [ ] ABI-stable C API
 - [ ] Language bindings
 
-## License
-
-MIT
