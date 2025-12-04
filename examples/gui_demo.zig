@@ -1,6 +1,6 @@
 //! GUI + Draw System Integration Demo
 //!
-//! Demonstrates the complete BYOR pipeline:
+//! Demonstrates the complete BYOR pipeline with a realistic Settings UI:
 //! GUI widgets → DrawList → SoftwareBackend → PPM image
 //!
 //! Run with: zig build gui-demo
@@ -20,9 +20,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Configure GUI with specific dimensions
-    const width: u32 = 400;
-    const height: u32 = 300;
+    // Larger canvas for a realistic UI
+    const width: u32 = 640;
+    const height: u32 = 480;
 
     var gui = try GUI.init(allocator, GUIConfig{
         .window_width = width,
@@ -33,58 +33,143 @@ pub fn main() !void {
     // Create software backend for pixel rendering
     var backend = try SoftwareBackend.initAlloc(allocator, width, height);
     defer backend.deinit(allocator);
-    backend.clear_color = 0xFF1a1a2e; // Dark blue-gray background
+    backend.clear_color = 0xFF16213e; // Deep blue background
 
-    // === Simulate a frame with widgets ===
+    // === Build a realistic Settings UI ===
 
     try gui.beginFrame();
 
-    // Header area
-    try gui.text("zig-gui Demo Application", .{});
+    // ─────────────────────────────────────────────────────────────────
+    // Application Header
+    // ─────────────────────────────────────────────────────────────────
+    try gui.text("Settings", .{});
     gui.newLine();
     gui.separator();
 
-    // Row of buttons
+    // ─────────────────────────────────────────────────────────────────
+    // Menu Bar
+    // ─────────────────────────────────────────────────────────────────
     gui.beginRow();
     gui.button("File");
     gui.button("Edit");
     gui.button("View");
+    gui.button("Tools");
     gui.button("Help");
     gui.endRow();
 
     gui.separator();
-
-    // Some content
-    try gui.text("Welcome to zig-gui!", .{});
-    gui.newLine();
-    try gui.text("This image was rendered using:", .{});
-    gui.newLine();
-    try gui.text("  - GUI immediate-mode widgets", .{});
-    gui.newLine();
-    try gui.text("  - DrawList command accumulation", .{});
-    gui.newLine();
-    try gui.text("  - SoftwareBackend rasterization", .{});
     gui.newLine();
 
-    gui.separator();
+    // ─────────────────────────────────────────────────────────────────
+    // Section: General
+    // ─────────────────────────────────────────────────────────────────
+    try gui.text("General", .{});
+    gui.newLine();
 
-    // Checkboxes
     gui.beginRow();
-    _ = gui.checkbox("option1", true);
-    try gui.text("Enable feature", .{});
+    _ = gui.checkbox("auto_save", true);
+    try gui.text("Auto-save on exit", .{});
     gui.endRow();
 
     gui.beginRow();
-    _ = gui.checkbox("option2", false);
-    try gui.text("Another option", .{});
+    _ = gui.checkbox("auto_update", true);
+    try gui.text("Check for updates automatically", .{});
     gui.endRow();
 
-    gui.separator();
+    gui.beginRow();
+    _ = gui.checkbox("telemetry", false);
+    try gui.text("Send anonymous usage data", .{});
+    gui.endRow();
 
-    // Action buttons
+    gui.newLine();
+    gui.separator();
+    gui.newLine();
+
+    // ─────────────────────────────────────────────────────────────────
+    // Section: Appearance
+    // ─────────────────────────────────────────────────────────────────
+    try gui.text("Appearance", .{});
+    gui.newLine();
+
+    gui.beginRow();
+    _ = gui.checkbox("dark_mode", true);
+    try gui.text("Dark mode", .{});
+    gui.endRow();
+
+    gui.beginRow();
+    _ = gui.checkbox("animations", true);
+    try gui.text("Enable animations", .{});
+    gui.endRow();
+
+    gui.beginRow();
+    _ = gui.checkbox("high_contrast", false);
+    try gui.text("High contrast mode", .{});
+    gui.endRow();
+
+    gui.newLine();
+    gui.separator();
+    gui.newLine();
+
+    // ─────────────────────────────────────────────────────────────────
+    // Section: Privacy & Security
+    // ─────────────────────────────────────────────────────────────────
+    try gui.text("Privacy & Security", .{});
+    gui.newLine();
+
+    gui.beginRow();
+    _ = gui.checkbox("remember_login", true);
+    try gui.text("Remember login", .{});
+    gui.endRow();
+
+    gui.beginRow();
+    _ = gui.checkbox("2fa", false);
+    try gui.text("Two-factor authentication", .{});
+    gui.endRow();
+
+    gui.beginRow();
+    _ = gui.checkbox("clear_history", false);
+    try gui.text("Clear history on exit", .{});
+    gui.endRow();
+
+    gui.newLine();
+    gui.separator();
+    gui.newLine();
+
+    // ─────────────────────────────────────────────────────────────────
+    // Section: Advanced
+    // ─────────────────────────────────────────────────────────────────
+    try gui.text("Advanced", .{});
+    gui.newLine();
+
+    gui.beginRow();
+    _ = gui.checkbox("dev_mode", false);
+    try gui.text("Developer mode", .{});
+    gui.endRow();
+
+    gui.beginRow();
+    _ = gui.checkbox("logging", true);
+    try gui.text("Enable logging", .{});
+    gui.endRow();
+
+    gui.newLine();
+    gui.separator();
+    gui.newLine();
+
+    // ─────────────────────────────────────────────────────────────────
+    // Action Buttons
+    // ─────────────────────────────────────────────────────────────────
+    gui.beginRow();
+    gui.button("Reset to Defaults");
+    gui.button("Import");
+    gui.button("Export");
+    gui.endRow();
+
+    gui.newLine();
+
     gui.beginRow();
     gui.button("Apply");
     gui.button("Cancel");
+    gui.button("OK");
     gui.endRow();
 
     try gui.endFrame();
