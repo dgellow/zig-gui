@@ -6,6 +6,7 @@ zig-out
 *.so
 *.dll
 *.lib
+*.ppm
 
 **/.claude/settings.local.json
 profile.json
