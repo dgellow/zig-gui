@@ -425,6 +425,40 @@ Long text has 450 break opportunities > 256 buffer → Design A truncates!
 
 Key lesson: Synthetic tests hid the bug - just like experiment 06 with mcufont!
 
+### Experiment 9: Truly Realistic Line Breaker (`09_realistic_linebreak.zig`)
+
+Comprehensive validation with realistic scenarios:
+- **Realistic measureText**: Cache simulation, kerning, variable widths
+- **13 real-world scenarios**: UI labels, error messages, URLs, CJK, long docs
+- **Additional interfaces**: Two-Pass (Design F), Stateful (Design G)
+- **Full edge cases**: Empty, single char, no breaks, all spaces
+
+```bash
+zig run experiments/text_rendering/09_realistic_linebreak.zig
+```
+
+**Critical Finding: measureText() dominates execution time!**
+
+| Scenario | Time (ns) | measureText calls |
+|----------|-----------|-------------------|
+| Button label (6B) | 82 | 0 |
+| Error message (94B) | 4,325 | 18 |
+| Long document (4500B) | 235,983 | 900 |
+
+**Interface Comparison on Long Text:**
+- Iterator (B): 237,904 ns
+- Two-Pass (F): 469,566 ns (2x slower due to double scan + allocation)
+
+**Final Recommendation:**
+| Interface | Use Case |
+|-----------|----------|
+| Iterator (B) | **Primary** - simple, correct, no overflow |
+| Two-Pass (F) | Exact allocation needed |
+| Stateful (G) | Text editing (cursor movement) |
+| Buffer (A) | **ONLY** bounded embedded text |
+
+Key insight: **Optimize measureText(), not the line breaker interface!**
+
 ---
 
 ## Open Questions to Resolve
