@@ -449,15 +449,46 @@ zig run experiments/text_rendering/09_realistic_linebreak.zig
 - Iterator (B): 237,904 ns
 - Two-Pass (F): 469,566 ns (2x slower due to double scan + allocation)
 
-**Final Recommendation:**
-| Interface | Use Case |
-|-----------|----------|
-| Iterator (B) | **Primary** - simple, correct, no overflow |
-| Two-Pass (F) | Exact allocation needed |
-| Stateful (G) | Text editing (cursor movement) |
-| Buffer (A) | **ONLY** bounded embedded text |
+**Final Interface Decision: Single-Method + Utilities**
 
-Key insight: **Optimize measureText(), not the line breaker interface!**
+After analyzing all use cases (embedded, desktop, mobile, gamedev, C API), we chose the simplest possible interface:
+
+```zig
+/// LineBreaker interface - implementers provide ONE method
+pub const LineBreaker = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        iterate: *const fn (ptr: *anyopaque, text: []const u8) Iterator,
+    };
+
+    pub const Iterator = struct {
+        text: []const u8,
+        pos: usize,
+        impl_ptr: *anyopaque,
+        nextFn: *const fn (*anyopaque, []const u8, *usize) ?BreakPoint,
+
+        pub fn next(self: *Iterator) ?BreakPoint {
+            return self.nextFn(self.impl_ptr, self.text, &self.pos);
+        }
+    };
+
+    // Convenience methods built on iterate() - NOT in vtable:
+    pub fn iterate(self, text) Iterator { ... }
+    pub fn countBreaks(self, text) usize { ... }
+    pub fn collectBreaks(self, text, out) usize { ... }
+};
+```
+
+| Use Case | Solution | Rationale |
+|----------|----------|-----------|
+| **Embedded** | `collectBreaks()` into fixed buffer | Known max text, fast path |
+| **Desktop** | `iterate()` directly | Lazy eval, no allocation |
+| **C API** | Iterator, Callback, or Buffer | All wrap single `iterate()` |
+
+Key insight: **measureText() dominates execution time (85%+), not the interface choice!**
+Simplest interface wins - one method in vtable = easiest to implement correctly.
 
 ---
 
