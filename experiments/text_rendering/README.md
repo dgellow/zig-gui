@@ -389,6 +389,31 @@ Validates the BYOL (Bring Your Own Line Breaker) pattern:
 zig run experiments/text_rendering/07_line_breaker.zig
 ```
 
+### Experiment 8: Line Breaker Interface Comparison (`08_linebreaker_interface.zig`)
+
+Compares 5 different interface designs for line breaking:
+- **Design A: Buffer-based** - Caller provides output buffer (current choice)
+- **Design B: Iterator-based** - Returns iterator yielding breaks on demand
+- **Design C: Callback-based** - Calls user function for each break
+- **Design D: Integrated** - Line breaking as TextProvider extension
+- **Design E: Streaming** - Incremental processing for large texts
+
+```bash
+zig run experiments/text_rendering/08_linebreaker_interface.zig
+```
+
+**Results (198 byte text, 10K iterations):**
+
+| Design | Time (ns) | VTable | Recommendation |
+|--------|-----------|--------|----------------|
+| A: Buffer | **1495** | 8 bytes | **Primary choice** |
+| B: Iterator | 1822 | 8 bytes | Good alternative |
+| C: Callback | 1696 | 8 bytes | Avoid - complex |
+| D: Integrated | 1587 | 16 bytes | Avoid - couples concerns |
+| E: Streaming | 1860 | 24 bytes | Only for large docs |
+
+**Decision: Design A (Buffer-based)** - Simplest, fastest, matches BYOT pattern.
+
 ---
 
 ## Open Questions to Resolve
