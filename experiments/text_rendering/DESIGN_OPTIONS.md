@@ -347,6 +347,36 @@ The BYOL approach is validated by current industry and academic research:
 - [cosmic-text](https://github.com/pop-os/cosmic-text) - Rust multi-line text handling
 - [Raph Levien: Text Layout is a Loose Hierarchy](https://raphlinus.github.io/text/2020/10/26/text-layout.html)
 
+**Interface Design Validation (Experiment 08):**
+
+Compared 5 interface patterns for the LineBreaker:
+
+| Design | Time (ns) | VTable | Verdict |
+|--------|-----------|--------|---------|
+| A: Buffer-based | **1495** | 8 bytes | **Primary choice** |
+| B: Iterator | 1822 | 8 bytes | Good alternative |
+| C: Callback | 1696 | 8 bytes | Avoid - complex context |
+| D: Integrated | 1587 | 16 bytes | Avoid - couples concerns |
+| E: Streaming | 1860 | 24 bytes | Only for large docs |
+
+**Final Interface (validated):**
+```zig
+pub const LineBreaker = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        findBreakPoints: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            out_breaks: []BreakPoint,
+        ) usize,
+    };
+};
+```
+
+Key insight: Buffer-based is simplest, fastest, and matches the BYOT pattern.
+
 ### 2. Font Fallback
 
 **Options**:
