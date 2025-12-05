@@ -616,6 +616,91 @@ pub const TextProvider = struct {
 | `getCaretInfo` is optional | Only needed for split caret at bidi boundaries |
 | No CharInfo array | Avoids 12 bytes/char overhead for embedded |
 
+### Experiment 12: Atlas Management When Full (`12_atlas_management.zig`)
+
+**Comprehensive validation of atlas management strategies across all targets.**
+
+This experiment simulates real-world glyph access patterns to compare atlas management strategies. It validates the interface design decision from our 2025 state-of-the-art survey.
+
+```bash
+zig run experiments/text_rendering/12_atlas_management.zig
+```
+
+**Strategies Tested:**
+
+| Strategy | Description | Source |
+|----------|-------------|--------|
+| Full Reset | Clear everything when full | Current impl |
+| Grid LRU | Fixed slots, O(1) eviction | VEFontCache |
+| Shelf LRU | Row-based eviction | WebRender |
+| Multi-Page | Grow when full | Unity/ImGui |
+| Direct Render | No atlas (per-frame) | MCUFont |
+
+**13 Realistic Scenarios:**
+
+| Category | Scenarios | Unique Glyphs |
+|----------|-----------|---------------|
+| Embedded | thermostat, menu, config input | 15-95 |
+| Desktop | settings, text editor, email | 80-300 |
+| CJK | Chinese news, Japanese chat | 2500-3000 |
+| Game | HUD, leaderboard, MMO chat | 40-500 |
+| Stress | Unicode torture, font switching | 300-10000 |
+
+**Key Results:**
+
+| Target | Winner | Finding |
+|--------|--------|---------|
+| Embedded | **Direct Render** | No atlas overhead, fits budget |
+| Desktop | Shelf LRU / Multi-Page | Shelf for SW, Multi-Page for text-heavy |
+| CJK | **Multi-Page** | Full Reset fails (constant stutter) |
+| Games | Grid LRU | O(1) eviction, predictable |
+
+**Critical Finding - Full Reset Fails CJK:**
+
+| Scenario | Full Reset Hit% | Multi-Page Hit% |
+|----------|-----------------|-----------------|
+| Chinese news | 63.9% | **99.5%** |
+| Japanese chat | 30.1% | **62.4%** |
+| MMO chat | 48.2% | **99.7%** |
+
+**Interface Decision (Validated):**
+
+| Decision | Rationale |
+|----------|-----------|
+| ✗ BYOFM (Bring Your Own Font Management) | Too complex for marginal benefit |
+| ✓ Split Interface | Universal + Rendering Layer |
+| ✓ Atlas Strategy as Config | `.atlas_strategy = .shelf_lru` |
+
+**Final Proposed Interface:**
+
+```zig
+pub const TextProvider = struct {
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        // UNIVERSAL (all tiers)
+        measureText: *const fn (...) TextMetrics,
+        getCharPositions: *const fn (...) usize,
+
+        // EMBEDDED PATH (null for desktop)
+        renderDirect: ?*const fn (ptr, text, x, y, target: RenderTarget) void,
+
+        // ATLAS PATH (null for embedded direct-render)
+        getGlyphQuads: ?*const fn (...) usize,
+        getAtlas: ?*const fn (ptr, page: u8) ?AtlasInfo,
+        beginFrame: ?*const fn (ptr) void,
+        endFrame: ?*const fn (ptr) void,
+    };
+};
+
+pub const AtlasStrategy = enum {
+    static,       // No eviction, pre-loaded
+    grid_lru,     // Fixed slots, O(1) eviction
+    shelf_lru,    // Row-based eviction
+    multi_page,   // Grow when full
+};
+```
+
 ---
 
 ## Open Questions to Resolve
@@ -639,21 +724,40 @@ pub const TextProvider = struct {
    - **Graphemes**: Provider returns grapheme positions, not byte positions
    - See experiments 10 and 11 for full analysis and actual bidi testing
 
-3. **Font fallback: whose responsibility?**
+3. **~~Atlas management when full?~~** ✓ FULLY RESOLVED (Experiment 12)
+   - **Decision: NO BYOFM** (Bring Your Own Font Management) - too complex
+   - **Decision: Split Interface** - Universal layer + mutually exclusive Rendering layers
+   - **Decision: Atlas Strategy as Config** - `.atlas_strategy = .shelf_lru` etc.
+
+   **Key findings from experiment 12:**
+   - **Embedded**: Direct render wins (no atlas overhead)
+   - **Desktop**: Shelf LRU or Multi-Page (depending on text volume)
+   - **CJK**: Multi-Page REQUIRED (Full Reset fails with 30-64% hit rate)
+   - **Games**: Grid LRU (O(1) eviction, predictable)
+
+   **Validated against 2025 state-of-the-art:**
+   - Browser: WebRender uses etagere (shelf allocator), Chromium/Skia multi-atlas
+   - Game engines: Unity TextMeshPro multi-atlas auto-grow, Unreal Slate pre-load
+   - UI frameworks: Dear ImGui 1.92+ dynamic multi-atlas, VEFontCache grid LRU
+   - Rust ecosystem: cosmic-text delegates to renderer, Vello compute shader
+
+   See experiment 12 for full simulation with 13 realistic scenarios.
+
+4. **Font fallback: whose responsibility?**
    - User provides fallback chain?
    - Built-in Unicode coverage detection?
    - Platform font discovery?
 
-4. **Atlas texture format?**
+5. **Atlas texture format?**
    - Alpha-only (1 channel, smaller)
    - RGBA (color emoji)
    - Both? Separate atlases?
 
-5. **Can SDF work on software backend?**
+6. **Can SDF work on software backend?**
    - CPU SDF evaluation is possible but slow
    - Worth supporting? Or mandate bitmap for SW?
 
-6. **Compile-time vs runtime font selection?**
+7. **Compile-time vs runtime font selection?**
    - Embedded: @embedFile() comptime fonts
    - Desktop: runtime loading
    - Can same interface support both?
