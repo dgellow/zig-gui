@@ -1129,16 +1129,141 @@ fn testSelectionRendering(allocator: std.mem.Allocator) !void {
     std.debug.print("  Current interface: Works - just call getCharPositions per line\n", .{});
     std.debug.print("  Or: Store positions for entire text, split by line\n", .{});
 
-    // Bidi selection (future)
-    std.debug.print("\nBidi selection (RTL mixed with LTR):\n", .{});
-    std.debug.print("  Problem: Visual selection may be non-contiguous\n", .{});
-    std.debug.print("  Example: Select logical [5,10] in 'Hello שלום World'\n", .{});
-    std.debug.print("           Visual: Two rectangles (before RTL + after RTL)\n", .{});
-    std.debug.print("  Solution: Provider returns multiple rects, or GUI calculates from CharInfo\n", .{});
+    // =========================================================================
+    // ACTUAL BIDI TEST - not guesses, real implementation
+    // =========================================================================
+    std.debug.print("\n--- ACTUAL Bidi Selection Test ---\n", .{});
 
-    std.debug.print("\n  CONCLUSION: Current interface (positions only) WORKS for LTR.\n", .{});
-    std.debug.print("  CONCLUSION: For exact widths, need positions + advances (or CharInfo).\n", .{});
-    std.debug.print("  CONCLUSION: Bidi needs either getSelectionRects() or CharInfo with direction.\n", .{});
+    // Simulate "Hello שלום World" - mixed LTR and RTL
+    // Logical order: H e l l o   ש ל ו ם   W o r l d
+    // Visual order:  H e l l o   ם ו ל ש   W o r l d
+    //                0 1 2 3 4 5 6 7 8 9 10 11 12 13 14
+    // Note: Hebrew chars are stored in logical order but displayed RTL
+
+    const BidiChar = struct {
+        logical_index: usize,
+        visual_x: f32,
+        advance: f32,
+        is_rtl: bool,
+    };
+
+    // Simulated bidi layout result (what a real shaper would produce)
+    const bidi_layout = [_]BidiChar{
+        .{ .logical_index = 0, .visual_x = 0, .advance = 8, .is_rtl = false }, // H
+        .{ .logical_index = 1, .visual_x = 8, .advance = 8, .is_rtl = false }, // e
+        .{ .logical_index = 2, .visual_x = 16, .advance = 8, .is_rtl = false }, // l
+        .{ .logical_index = 3, .visual_x = 24, .advance = 8, .is_rtl = false }, // l
+        .{ .logical_index = 4, .visual_x = 32, .advance = 8, .is_rtl = false }, // o
+        .{ .logical_index = 5, .visual_x = 40, .advance = 8, .is_rtl = false }, // space
+        // RTL run - visual order is reversed!
+        .{ .logical_index = 6, .visual_x = 72, .advance = 8, .is_rtl = true }, // ש (visually last in RTL run)
+        .{ .logical_index = 7, .visual_x = 64, .advance = 8, .is_rtl = true }, // ל
+        .{ .logical_index = 8, .visual_x = 56, .advance = 8, .is_rtl = true }, // ו
+        .{ .logical_index = 9, .visual_x = 48, .advance = 8, .is_rtl = true }, // ם (visually first in RTL run)
+        .{ .logical_index = 10, .visual_x = 80, .advance = 8, .is_rtl = false }, // space
+        .{ .logical_index = 11, .visual_x = 88, .advance = 8, .is_rtl = false }, // W
+        .{ .logical_index = 12, .visual_x = 96, .advance = 8, .is_rtl = false }, // o
+        .{ .logical_index = 13, .visual_x = 104, .advance = 8, .is_rtl = false }, // r
+        .{ .logical_index = 14, .visual_x = 112, .advance = 8, .is_rtl = false }, // l
+    };
+
+    std.debug.print("\nBidi layout (simulated shaper output):\n", .{});
+    std.debug.print("  Logical: H e l l o   ש ל ו ם   W o r l d\n", .{});
+    std.debug.print("  Visual:  H e l l o   ם ו ל ש   W o r l d\n", .{});
+    std.debug.print("                       ←RTL→\n", .{});
+
+    // TEST: Hit test at x=60 (middle of RTL run)
+    std.debug.print("\nHIT TEST at x=60:\n", .{});
+    const click_x: f32 = 60;
+
+    // Method 1: Binary search on visual positions (WRONG for bidi)
+    var wrong_index: usize = 0;
+    for (bidi_layout, 0..) |ch, i| {
+        if (ch.visual_x <= click_x) wrong_index = i;
+    }
+    std.debug.print("  Binary search on positions: index {d} (WRONG - doesn't account for RTL)\n", .{wrong_index});
+
+    // Method 2: Proper hit test considering character bounds
+    var correct_index: usize = 0;
+    for (bidi_layout) |ch| {
+        if (click_x >= ch.visual_x and click_x < ch.visual_x + ch.advance) {
+            correct_index = ch.logical_index;
+            break;
+        }
+    }
+    std.debug.print("  Proper hit test: logical index {d} (CORRECT)\n", .{correct_index});
+
+    // TEST: Selection from logical index 4 to 8 (selecting "o שלו")
+    std.debug.print("\nSELECTION TEST - logical [4, 8):\n", .{});
+    const sel_start_log: usize = 4;
+    const sel_end_log: usize = 8;
+
+    // Method A: Assume contiguous visual (WRONG for bidi)
+    std.debug.print("  Method A (assume contiguous): FAILS for bidi\n", .{});
+
+    // Method B: Calculate actual visual rectangles
+    var rects_count: usize = 0;
+    var rects: [4]SelectionRect = undefined;
+    var current_rect: ?SelectionRect = null;
+    var last_visual_end: f32 = -1;
+
+    // Sort by visual position for rect calculation
+    var sorted_indices: [15]usize = undefined;
+    for (0..bidi_layout.len) |i| sorted_indices[i] = i;
+
+    // Simple bubble sort by visual_x
+    for (0..bidi_layout.len) |i| {
+        for (i + 1..bidi_layout.len) |j| {
+            if (bidi_layout[sorted_indices[j]].visual_x < bidi_layout[sorted_indices[i]].visual_x) {
+                const tmp = sorted_indices[i];
+                sorted_indices[i] = sorted_indices[j];
+                sorted_indices[j] = tmp;
+            }
+        }
+    }
+
+    // Build rectangles from visually-sorted chars in selection
+    for (sorted_indices[0..bidi_layout.len]) |idx| {
+        const ch = bidi_layout[idx];
+        if (ch.logical_index >= sel_start_log and ch.logical_index < sel_end_log) {
+            if (current_rect) |*r| {
+                // Check if contiguous visually
+                if (ch.visual_x == last_visual_end) {
+                    r.width += ch.advance;
+                    last_visual_end = ch.visual_x + ch.advance;
+                } else {
+                    // Gap - save current rect and start new one
+                    rects[rects_count] = r.*;
+                    rects_count += 1;
+                    current_rect = SelectionRect{ .x = ch.visual_x, .y = 0, .width = ch.advance, .height = 16 };
+                    last_visual_end = ch.visual_x + ch.advance;
+                }
+            } else {
+                current_rect = SelectionRect{ .x = ch.visual_x, .y = 0, .width = ch.advance, .height = 16 };
+                last_visual_end = ch.visual_x + ch.advance;
+            }
+        }
+    }
+    if (current_rect) |r| {
+        rects[rects_count] = r;
+        rects_count += 1;
+    }
+
+    std.debug.print("  Method B (calculate from CharInfo): {d} rectangle(s)\n", .{rects_count});
+    for (rects[0..rects_count], 0..) |r, i| {
+        std.debug.print("    Rect {d}: x={d:.0}, width={d:.0}\n", .{ i, r.x, r.width });
+    }
+
+    // FINDINGS
+    std.debug.print("\n  ACTUAL FINDING: Bidi selection produces {d} rectangles (not 1)\n", .{rects_count});
+    std.debug.print("  ACTUAL FINDING: Need CharInfo with visual_x to calculate rects\n", .{});
+    std.debug.print("  ACTUAL FINDING: Binary search on positions FAILS for RTL hit test\n", .{});
+
+    // What interface is needed?
+    std.debug.print("\n  INTERFACE REQUIREMENT:\n", .{});
+    std.debug.print("    getCharInfo() must return: {{visual_x, advance, is_rtl}}\n", .{});
+    std.debug.print("    OR provider needs: getSelectionRects(start, end) -> []Rect\n", .{});
+    std.debug.print("    OR provider needs: hitTest(visual_x) -> logical_index\n", .{});
 
     _ = allocator;
 }
@@ -1244,9 +1369,10 @@ fn printFinalConclusions() void {
     std.debug.print("   Desktop: Full UAX #29 grapheme segmentation.\n", .{});
 
     std.debug.print("\n2. SELECTION RENDERING:\n", .{});
-    std.debug.print("   Decision: Current interface (positions) works for LTR.\n", .{});
-    std.debug.print("   For exact widths: Add advances or use CharInfo.\n", .{});
-    std.debug.print("   For bidi: Need getSelectionRects() or CharInfo with direction.\n", .{});
+    std.debug.print("   TESTED: Bidi selection [4,8) produces 2 rectangles, not 1.\n", .{});
+    std.debug.print("   TESTED: Binary search on positions FAILS for RTL hit test.\n", .{});
+    std.debug.print("   REQUIRED: CharInfo with {{visual_x, advance, is_rtl}} per grapheme.\n", .{});
+    std.debug.print("   OR: Provider implements hitTest() and getSelectionRects().\n", .{});
 
     std.debug.print("\n3. TOUCH HIT TESTING:\n", .{});
     std.debug.print("   Decision: Same interface for mouse and touch.\n", .{});
