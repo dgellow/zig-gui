@@ -167,12 +167,18 @@ pub const AtlasStrategy = enum {
     multi_page,  // Grow when full
 };
 
+pub const AtlasMode = enum {
+    shared,      // All fonts share one atlas
+    per_font,    // Each font gets dedicated pages (default, validated exp 14)
+};
+
 pub const TextProviderConfig = struct {
     primary_font: FontHandle,
     fallback_fonts: []const FontHandle = &.{},
     fallback_locale: ?[]const u8 = null,  // For Han unification
     missing_glyph: MissingGlyphBehavior = .render_notdef,
     atlas_strategy: AtlasStrategy = .shelf_lru,
+    atlas_mode: AtlasMode = .per_font,  // Validated by experiment 14
     atlas_size: u16 = 1024,
     max_atlas_pages: u8 = 4,
 };
@@ -315,19 +321,68 @@ Ships with `SimpleBreaker` (ASCII, ~50 lines) and `GreedyBreaker` (CJK, ~150 lin
 - Raw: simplest, fastest (17x), fits budget
 - MCUFont: opt-in for space-constrained (22% smaller)
 
+### 9. stb_truetype Kerning ✓ (Experiment 14)
+
+**Decision**: Implement kerning via stb_truetype kern table
+
+- Most system fonts have kern tables (validated with DejaVu, Liberation, FreeSans)
+- stbtt_GetCodepointKernAdvance() works for Latin text
+- GPOS-only fonts (no kern table) require HarfBuzz for kerning
+- Document: "Full kerning for complex scripts requires ShapingProvider"
+
+### 10. Multi-Font Atlas Strategy ✓ (Experiment 14)
+
+**Decision**: Per-font atlas pages (configurable)
+
+- Per-font pages provide better isolation with acceptable memory cost
+- Shared atlas has eviction problems when fonts compete
+- Per-font-per-size is overkill for most scenarios
+- Config: `.atlas_mode = .per_font | .shared`
+
+### 11. Text→Quads Location ✓ (Experiment 14)
+
+**Decision**: In draw generation (not measurement, not backend)
+
+- `gui.text()` calls `measureText()` for layout, stores text+style
+- `drawList.generateForWidget()` calls `getGlyphQuads()` - quads computed here
+- Backend just renders textured quads (no text-specific logic)
+- Benefits: lazy evaluation, clean separation, single TextProvider reference
+
+### 12. Grapheme Segmentation ✓ (Experiment 14)
+
+**Decision**: Internal to provider (not pluggable BYOG)
+
+- 90% of text is simple ASCII + precomposed Unicode
+- StbProvider handles combining marks + ZWJ sequences (~150 lines)
+- ShapingProvider (HarfBuzz) handles full UAX #29 for complex scripts
+- Interface: `getCharPositions()` returns grapheme count internally
+
+### 13. Emoji Without Color Parser ✓ (Experiment 14)
+
+**Decision**: Use monochrome emoji font as fallback
+
+- Color emoji (COLR/CBDT) requires significant parsing work
+- Monochrome emoji fonts (Noto Emoji, Symbola) work with stb_truetype today
+- Recommended fallback: Primary → Noto Emoji (mono) → Symbola
+- Document: "Color emoji requires color font parser (not included)"
+
 ---
 
 ## Open Questions (Remaining)
 
-### Implementation Gaps (Need Validation)
+### Implementation Gaps
 
 | # | Gap | Status | Notes |
 |---|-----|--------|-------|
-| 1 | Multi-font implementation | Needs Exp 14 | Load 3+ fonts, test atlas |
-| 2 | Kerning | Needs Exp 14 | stb_truetype has it, untested |
-| 3 | Draw system integration | Needs DESIGN.md | When to resolve text→quads? |
-| 4 | C API | Not written | Write header, test from C |
-| 5 | Emoji ZWJ sequences | Needs Exp 14 | 5 codepoints → 1 glyph |
+| 1 | C API | Not written | Write header, test from C |
+| 2 | DESIGN.md update | Pending | Document draw integration architecture |
+
+All other gaps resolved by Experiment 14:
+- ✓ Multi-font atlas strategy → Per-font pages (Decision 10)
+- ✓ Kerning → Use stb kern table (Decision 9)
+- ✓ Draw integration → In draw generation (Decision 11)
+- ✓ Grapheme/ZWJ → Internal to provider (Decision 12)
+- ✓ Emoji rendering → Monochrome fallback (Decision 13)
 
 ### Out of Scope (Explicit Exclusions)
 
@@ -338,6 +393,7 @@ These features are **not part of the design** - not "deferred", but excluded:
 | SDF/MSDF | Optimization for GPU; bitmap covers all targets adequately |
 | Subpixel rendering | Platform-specific (DirectWrite, CoreText); not portable |
 | Variable fonts | Specialized use case; standard fonts cover 99% of needs |
+| Color emoji parser | Significant complexity; monochrome emoji is acceptable UX |
 
 ### In Design, Implementation Pending
 
@@ -347,7 +403,6 @@ These are **fully designed** in the interface but implementation is pending:
 |---------|-------------------|----------------------|
 | Bidi (RTL) | `hitTest()`, `getCaretInfo()` optional in vtable | Needs HarfBuzz integration |
 | Complex shaping | `shapeText()` optional in vtable | Needs HarfBuzz integration |
-| Color emoji | `AtlasFormat.rgba` in AtlasInfo | Needs COLR/CBDT parsing |
 
 ---
 
@@ -414,7 +469,7 @@ The design covers the full system - there are no "phases", only implementation o
 | 11 | Bidi validation | Binary search FAILS, need hitTest |
 | 12 | Atlas management | Multi-page required for CJK |
 | 13 | Font fallback | User chain + locale for Han unification |
-| **14** | **TODO** | Multi-font + kerning + graphemes + full pipeline |
+| 14 | Font system decisions | Kerning: stb kern ✓, Atlas: per-font ✓, Draw: in generation ✓ |
 
 Run experiments:
 ```bash
