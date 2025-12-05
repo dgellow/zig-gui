@@ -564,7 +564,171 @@ Key insight: Synthetic tests hid the buffer overflow bug. Always test with reali
 
 **Recommendation**: A (user responsibility). Built-in fallback adds complexity for marginal benefit.
 
-### 3. Color Emoji
+### 3. ~~Atlas Management When Full~~ ✓ RESOLVED (Experiment 12)
+
+**Decision**: NO BYOFM + Split Interface + Atlas Strategy as Config
+
+**Background**: The current implementation (`05_stb_integration.zig:205-211`) uses `resetAtlas()` which clears everything when the atlas is full. This fails catastrophically for CJK text (30-64% hit rate).
+
+**Options Evaluated**:
+
+| Option | Description | Verdict |
+|--------|-------------|---------|
+| A) Full Reset | Clear everything when full | ✗ Fails CJK |
+| B) Grid LRU | Fixed slots, O(1) eviction (VEFontCache) | ✓ Games |
+| C) Shelf LRU | Row-based eviction (WebRender/etagere) | ✓ Desktop SW |
+| D) Multi-Page | Grow when full (Unity/ImGui) | ✓ CJK/text-heavy |
+| E) Direct Render | No atlas, per-frame (MCUFont) | ✓ Embedded |
+| F) BYOFM | Pluggable atlas management | ✗ Too complex |
+
+**Final Decision: Three-Part Strategy**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      ATLAS MANAGEMENT DECISION                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. NO BYOFM (Bring Your Own Font Management)                               │
+│     ─────────────────────────────────────────                               │
+│     Rationale:                                                               │
+│     • No industry consensus (every engine does it differently)              │
+│     • Too much implementation burden on users                               │
+│     • Tight coupling between atlas and rasterizer                           │
+│     • Marginal benefit: most users just need "pick a tier"                  │
+│                                                                              │
+│  2. SPLIT INTERFACE (Universal + Rendering Layer)                           │
+│     ───────────────────────────────────────────                             │
+│     Universal (all tiers):                                                   │
+│     • measureText() - layout                                                 │
+│     • getCharPositions() - cursor/selection                                  │
+│                                                                              │
+│     Embedded path (mutually exclusive):                                      │
+│     • renderDirect() - no atlas, direct to framebuffer                      │
+│                                                                              │
+│     Desktop path (mutually exclusive):                                       │
+│     • getGlyphQuads() + getAtlas() + beginFrame/endFrame()                  │
+│                                                                              │
+│  3. ATLAS STRATEGY AS CONFIG                                                 │
+│     ────────────────────────                                                │
+│     .atlas_strategy = .shelf_lru  (not a separate interface)                │
+│     Provider picks sensible default, power users override                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Updated TextProvider Interface**:
+
+```zig
+pub const TextProvider = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        // ═══════════════════════════════════════════════════════════════
+        // UNIVERSAL (all tiers) - REQUIRED
+        // ═══════════════════════════════════════════════════════════════
+
+        measureText: *const fn (ptr: *anyopaque, text: []const u8, font_id: u16, size: f32) TextMetrics,
+        getCharPositions: *const fn (ptr: *anyopaque, text: []const u8, font_id: u16, size: f32, out: []f32) usize,
+
+        // ═══════════════════════════════════════════════════════════════
+        // BIDI (optional, null = LTR only)
+        // ═══════════════════════════════════════════════════════════════
+
+        hitTest: ?*const fn (ptr: *anyopaque, text: []const u8, font_id: u16, size: f32, visual_x: f32) HitTestResult,
+        getCaretInfo: ?*const fn (ptr: *anyopaque, text: []const u8, font_id: u16, size: f32, logical_index: usize) CaretInfo,
+
+        // ═══════════════════════════════════════════════════════════════
+        // EMBEDDED PATH (null for desktop providers)
+        // Direct render to framebuffer, no atlas overhead
+        // ═══════════════════════════════════════════════════════════════
+
+        renderDirect: ?*const fn (ptr: *anyopaque, text: []const u8, font_id: u16, size: f32, x: f32, y: f32, target: RenderTarget) void,
+
+        // ═══════════════════════════════════════════════════════════════
+        // ATLAS PATH (null for embedded direct-render providers)
+        // GPU-friendly batched rendering via glyph quads
+        // ═══════════════════════════════════════════════════════════════
+
+        getGlyphQuads: ?*const fn (ptr: *anyopaque, text: []const u8, font_id: u16, size: f32, origin: [2]f32, out_quads: []GlyphQuad) usize,
+        getAtlas: ?*const fn (ptr: *anyopaque, page: u8) ?AtlasInfo,
+        beginFrame: ?*const fn (ptr: *anyopaque) void,
+        endFrame: ?*const fn (ptr: *anyopaque) void,
+
+        // ═══════════════════════════════════════════════════════════════
+        // EXTENSIONS (optional)
+        // ═══════════════════════════════════════════════════════════════
+
+        shapeText: ?*const fn (...) usize,
+        loadFont: ?*const fn (...) ?u16,
+    };
+};
+
+/// Atlas eviction strategy - CONFIG, not interface
+pub const AtlasStrategy = enum {
+    static,      // Pre-loaded, no eviction (games with known charset)
+    grid_lru,    // Fixed slots, O(1) eviction (VEFontCache style)
+    shelf_lru,   // Row-based eviction (WebRender/etagere style) - DEFAULT
+    multi_page,  // Grow when full (Unity/ImGui style) - for CJK
+};
+
+/// Provider initialization config
+pub const TextProviderConfig = struct {
+    atlas_strategy: AtlasStrategy = .shelf_lru,
+    atlas_size: u16 = 1024,
+    max_atlas_pages: u8 = 4,
+    // ... other config
+};
+```
+
+**Recommendations by Target**:
+
+| Target | Provider | Atlas Strategy | Rationale |
+|--------|----------|----------------|-----------|
+| Embedded (32KB) | BitmapProvider | N/A (renderDirect) | No atlas overhead |
+| Desktop SW | StbProvider | shelf_lru | Good balance |
+| Desktop GPU | SdfProvider | shelf_lru or multi_page | Depends on text volume |
+| CJK-heavy | StbProvider | multi_page | Thousands of glyphs |
+| Games | StbProvider | grid_lru | O(1) eviction, predictable |
+
+**Experiment 12 Key Results**:
+
+| Scenario | Full Reset | Multi-Page | Finding |
+|----------|------------|------------|---------|
+| Chinese news app | 63.9% hit | **99.5%** hit | Multi-Page required |
+| Japanese chat | 30.1% hit | **62.4%** hit | Full Reset fails |
+| MMO chat | 48.2% hit | **99.7%** hit | Multi-Page required |
+| Game HUD | 100% hit | 100% hit | Either works |
+| Thermostat | N/A | N/A | Direct render wins |
+
+**2025 State-of-the-Art Validation**:
+
+| Source | Approach | Alignment |
+|--------|----------|-----------|
+| WebRender (Firefox) | etagere shelf allocator | ✓ Shelf LRU |
+| Chromium/Skia | Multi-atlas with LRU | ✓ Multi-Page |
+| Unity TextMeshPro | Multi-atlas auto-grow | ✓ Multi-Page |
+| Dear ImGui 1.92+ | Dynamic multi-atlas | ✓ Multi-Page |
+| VEFontCache | Grid-based fixed slots | ✓ Grid LRU |
+| cosmic-text | Delegates to renderer | ✓ Split interface |
+| Vello | Compute shader (no atlas) | ✓ Direct render option |
+
+**Why NOT BYOFM**:
+
+1. **No consensus**: Survey of 10+ production systems found 5+ different approaches
+2. **Tight coupling**: Atlas packing depends on glyph sizes, which depends on rasterizer
+3. **Complexity burden**: Users would need to understand texture packing, LRU, defragmentation
+4. **Marginal benefit**: 95% of users just need "embedded" or "desktop" - config is enough
+5. **Testing burden**: Each user's atlas impl would need extensive validation
+
+**Sources**:
+- Experiment 12: `experiments/text_rendering/12_atlas_management.zig`
+- WebRender etagere: https://github.com/servo/webrender
+- VEFontCache: https://github.com/nicebyte/vefontcache
+- Dear ImGui 1.92: https://github.com/ocornut/imgui/pull/8188
+- Unity TextMeshPro: https://docs.unity3d.com/Manual/UIE-font-asset.html
+
+### 4. Color Emoji
 
 **Options**:
 - A) Support via RGBA atlas pages
@@ -573,7 +737,7 @@ Key insight: Synthetic tests hid the buffer overflow bug. Always test with reali
 
 **Recommendation**: B initially, A later. Color emoji can be added via atlas format flag.
 
-### 4. stb_truetype vs Zig Port
+### 5. stb_truetype vs Zig Port
 
 **Options**:
 - A) Wrap stb_truetype.h via C import
