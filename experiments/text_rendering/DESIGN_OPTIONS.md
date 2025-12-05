@@ -378,6 +378,50 @@ zig run experiments/text_rendering/04_memory_budget.zig
 
 ---
 
+## Compression Strategy (Updated from Experiment 6)
+
+**Critical finding:** Real antialiased font data is very different from synthetic test data!
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              PIXEL DISTRIBUTION: SYNTHETIC vs REAL               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Synthetic (Experiment 2):     Real Font (Experiment 6):        │
+│  ┌─────────────────────┐      ┌─────────────────────┐          │
+│  │██████████████████░░│ 85%  │████████░░░░░░░░░░░░░│ 40% Black │
+│  │██░░░░░░░░░░░░░░░░░░│ 10%  │░░░░░░░░░░░░░░░░░░░░░│  2% White │
+│  │░░░░░░░░░░░░░░░░░░░░│  5%  │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│ 58% Gray  │
+│  └─────────────────────┘      └─────────────────────┘          │
+│                                                                  │
+│  RLE works great!              RLE EXPANDS data!                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Compression Results (16px DejaVu Sans, 95 ASCII):**
+
+| Algorithm | Size | Ratio | Decode | Best For |
+|-----------|------|-------|--------|----------|
+| None | 7,079 B | 1.0x | 124 ns | Simple, fast |
+| SimpleRLE | 10,004 B | 0.7x | 1,028 ns | **1-bit fonts only** |
+| MCUFont | 5,542 B | 1.3x | 2,143 ns | 8-bit AA fonts |
+
+**Recommendation:**
+
+```zig
+// build.zig
+const Compression = enum { none, simple_rle, mcufont };
+
+// Default based on font type:
+// - 1-bit fonts: simple_rle (3x compression, fast decode)
+// - 8-bit AA fonts: mcufont (1.3x compression) OR none (simplest)
+```
+
+All options fit comfortably in 32KB budget (~26% used).
+
+---
+
 ## Next Steps
 
 1. **Get team alignment** on this design
