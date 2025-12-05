@@ -543,6 +543,79 @@ Bidi requires:
 2. For bidi, add optional `hitTest(text, visual_x) -> HitTestResult`
 3. Provider handles bidi complexity internally
 
+### Experiment 11: Cursor Interface Validation (`11_cursor_interface.zig`)
+
+**Comprehensive validation of cursor/selection interface with actual bidi testing.**
+
+This experiment follows the proven pattern from experiment 09 - realistic scenarios with actual implementations and measurements instead of guesswork.
+
+```bash
+zig run experiments/text_rendering/11_cursor_interface.zig
+```
+
+**What It Tests:**
+
+| Test | Purpose | Finding |
+|------|---------|---------|
+| Grapheme iteration | Byte vs codepoint vs grapheme | Grapheme-based REQUIRED |
+| Selection rendering | Single rect vs multiple | Bidi needs multiple rects |
+| Bidi hit testing | Binary search vs bounds check | Binary search FAILS for RTL |
+| Touch vs mouse | Interface differences | Same interface, UX layer handles |
+| CaretInfo necessity | When split caret needed | Only for bidi boundaries |
+
+**Actual Bidi Test Results:**
+
+Simulated "Hello שלום World" with proper bidi layout:
+```
+Logical: H e l l o   ש ל ו ם   W o r l d
+Visual:  H e l l o   ם ו ל ש   W o r l d
+                     ← RTL →
+```
+
+- **Hit test at x=60**: Binary search returns index 9 (WRONG), proper bounds check returns 8 (CORRECT)
+- **Selection [4,8)**: Produces 2 rectangles, not 1 (visual is non-contiguous)
+- **Grapheme "Aé👍B"**: 8 bytes but only 4 grapheme positions needed
+
+**Final Interface (validated):**
+
+```zig
+pub const TextProvider = struct {
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        // REQUIRED - Core
+        measureText: *const fn (ptr, text: []const u8) f32,
+
+        // REQUIRED - Returns GRAPHEME positions (not bytes)
+        getCharPositions: *const fn (ptr, text, out: []f32) usize,
+
+        // OPTIONAL - For bidi (null = LTR only)
+        hitTest: ?*const fn (ptr, text, x: f32) HitTestResult,
+        getCaretInfo: ?*const fn (ptr, text, index: usize) CaretInfo,
+    };
+
+    pub const HitTestResult = struct {
+        logical_index: usize,
+        trailing: bool,
+    };
+
+    pub const CaretInfo = struct {
+        primary_x: f32,
+        secondary_x: ?f32,  // Split caret (null if not needed)
+        is_rtl: bool,
+    };
+};
+```
+
+**Key Design Decisions:**
+
+| Decision | Rationale |
+|----------|-----------|
+| `getCharPositions` returns grapheme count | Provider handles encoding complexity |
+| `hitTest` is optional | Binary search works for LTR; bidi providers implement |
+| `getCaretInfo` is optional | Only needed for split caret at bidi boundaries |
+| No CharInfo array | Avoids 12 bytes/char overhead for embedded |
+
 ---
 
 ## Open Questions to Resolve
@@ -560,12 +633,11 @@ Bidi requires:
    - Production: cosmic-text uses external `unicode-linebreak` crate (same BYOL pattern)
    - Academia: Knuth-Plass still active (ACM DocEng 2024 paper on similarity problems)
 
-2. **~~How do we handle text input cursors?~~** ✓ RESOLVED (Experiment 10)
-   - **Answer: Current `getCharPositions()` is sufficient for LTR**
-   - Cache positions in TextField (invalidate on text change)
-   - Hit testing: binary search on returned positions
-   - See experiment 10 for full analysis
-   - **LIMITATION: Bidi (RTL) deferred to Phase 3** - see below
+2. **~~How do we handle text input cursors?~~** ✓ FULLY RESOLVED (Experiments 10 + 11)
+   - **LTR**: `getCharPositions()` + binary search (validated experiment 10)
+   - **Bidi**: Optional `hitTest()` and `getCaretInfo()` in vtable (validated experiment 11)
+   - **Graphemes**: Provider returns grapheme positions, not byte positions
+   - See experiments 10 and 11 for full analysis and actual bidi testing
 
 3. **Font fallback: whose responsibility?**
    - User provides fallback chain?
