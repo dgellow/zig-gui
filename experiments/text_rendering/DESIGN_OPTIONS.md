@@ -407,15 +407,65 @@ zig run experiments/text_rendering/04_memory_budget.zig
 | SimpleRLE | 10,004 B | 0.7x | 1,028 ns | **1-bit fonts only** |
 | MCUFont | 5,542 B | 1.3x | 2,143 ns | 8-bit AA fonts |
 
-**Recommendation:**
+### Decision: Raw as Default, Auto-Detection in Build Tool
+
+**Default: `none` (raw storage)**
+
+Rationale:
+1. **Fits in budget** - 26% of 32KB, plenty of room for app code
+2. **Simplest** - No encoder tool complexity, no decoder code to ship
+3. **Fastest** - 124ns decode vs 2,143ns for MCUFont (17x faster)
+4. **Zero risk** - Cannot accidentally expand data like SimpleRLE does
+5. **Less code** - No compression bugs possible
+
+**Opt-in: MCUFont for space-constrained builds**
 
 ```zig
 // build.zig
-const Compression = enum { none, simple_rle, mcufont };
+const FontCompression = enum {
+    none,      // Default: simple, fast, safe
+    mcufont,   // Opt-in: saves ~22%, slower decode
+    // Note: simple_rle NOT recommended - expands AA font data
+};
+```
 
-// Default based on font type:
-// - 1-bit fonts: simple_rle (3x compression, fast decode)
-// - 8-bit AA fonts: mcufont (1.3x compression) OR none (simplest)
+**Build Tool: Auto-Detection**
+
+The font encoding tool analyzes pixel distribution and recommends/selects:
+
+```
+$ zig-gui-font encode input.ttf -o font.bin
+
+Analyzing pixel distribution...
+  Black (0):      39.7%
+  White (255):     2.5%
+  Intermediate:   57.8%
+
+Recommendation: raw (high intermediate pixel ratio)
+Using: raw
+Output: font.bin (7,079 bytes)
+```
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AUTO-DETECTION LOGIC                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Analyze pixel distribution:                                     │
+│                                                                  │
+│  If black + white > 80%:                                        │
+│    → Use SimpleRLE (long runs, good compression)                │
+│    → Typical for: 1-bit fonts, high-contrast renders            │
+│                                                                  │
+│  If intermediate > 20%:                                         │
+│    → Use raw (RLE would expand)                                 │
+│    → Typical for: antialiased fonts                             │
+│                                                                  │
+│  Override available: --compression=mcufont                       │
+│    → For users who need every byte                              │
+│    → Accept slower decode (17x) for 22% size reduction          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 All options fit comfortably in 32KB budget (~26% used).

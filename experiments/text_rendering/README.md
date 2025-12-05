@@ -366,10 +366,15 @@ zig build-exe -lc -I. stb_truetype_impl.c 06_embedded_e2e.zig -femit-bin=06_embe
 | SimpleRLE | 10,004 B | **0.7x** (EXPANSION!) | 1,028 ns |
 | MCUFont | 5,542 B | **1.3x** | 2,143 ns |
 
-**Updated Recommendation:**
-- **1-bit fonts**: SimpleRLE works great (~3x compression)
-- **8-bit AA fonts**: MCUFont or raw (RLE expands due to no runs)
-- Compile flag approach still valid
+**Decision: Raw as Default, Auto-Detection in Build Tool**
+
+| Default | Rationale |
+|---------|-----------|
+| `none` (raw) | Simplest, fastest (17x), zero risk, fits budget |
+
+- **Build tool auto-detects**: If >80% black+white → RLE, else → raw
+- **MCUFont opt-in**: For users who need every byte (22% smaller, 17x slower)
+- **SimpleRLE warning**: Only for 1-bit fonts, expands AA data
 
 ### Experiment 7: Line Breaking Interface (`07_line_breaker.zig`)
 
