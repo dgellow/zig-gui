@@ -165,6 +165,35 @@ Before claiming any performance number:
 4. Force worst-case scenarios
 5. Document methodology
 
+### Realistic Data Validation (CRITICAL)
+
+**Synthetic tests can give completely misleading results.**
+
+Both experiment 06 (font compression) and experiment 08 (line breaking) revealed the same pattern:
+
+| Experiment | Synthetic Result | Realistic Result | Impact |
+|------------|------------------|------------------|--------|
+| 06: Compression | SimpleRLE compresses ~3x | SimpleRLE EXPANDS data (0.7x) | Wrong default choice |
+| 08: Interface | Buffer-based fastest | Buffer-based TRUNCATES output | Incorrect lines |
+
+**Root causes discovered:**
+- Exp 06: Synthetic assumed 85% black pixels; real fonts have 58% gray (antialiasing)
+- Exp 08: Short test text had 40 breaks; real CJK/long text has 450+ breaks
+
+**Always test with:**
+1. Real data (actual fonts, actual UI text, actual user content)
+2. Edge cases (empty, very long, all-breaks, no-breaks)
+3. Different densities (ASCII ~20% breaks vs CJK ~100% breaks)
+4. Scale variations (short labels to long documents)
+
+**Before finalizing any interface or algorithm:**
+```
+1. Identify synthetic assumptions
+2. Find real-world counterexamples
+3. Test with worst-case realistic data
+4. Verify correctness, not just speed
+```
+
 ## C API Rules
 
 ```c
