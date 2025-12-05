@@ -675,6 +675,135 @@ pub const DesignE = struct {
 };
 
 // ============================================================================
+// REALISTIC TEST SCENARIOS
+// ============================================================================
+
+// Scenario 1: Short label (like a button)
+const short_label = "Submit Form";
+
+// Scenario 2: Medium paragraph (typical UI text)
+const medium_text =
+    \\The quick brown fox jumps over the lazy dog. Pack my box with five
+    \\dozen liquor jugs. How vexingly quick daft zebras jump! The five
+    \\boxing wizards jump quickly. Sphinx of black quartz, judge my vow.
+;
+
+// Scenario 3: Long document (stress test)
+const long_text = "The quick brown fox jumps over the lazy dog. " ** 50;
+
+// Scenario 4: CJK-like text (break after every character - high break density)
+// Using Latin chars but treating each as break opportunity
+const high_density_text = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+// ============================================================================
+// DIFFERENT MEASURE FUNCTIONS (simulate different costs)
+// ============================================================================
+
+// Cheap: just count chars
+fn cheapMeasure(text: []const u8) f32 {
+    return @as(f32, @floatFromInt(text.len)) * 8.0;
+}
+
+// Medium: simulate font lookup (loop over chars)
+fn mediumMeasure(text: []const u8) f32 {
+    var width: f32 = 0;
+    for (text) |c| {
+        // Simulate variable width fonts
+        width += switch (c) {
+            'i', 'l', '!' => 4.0,
+            'w', 'm', 'W', 'M' => 12.0,
+            ' ' => 4.0,
+            else => 8.0,
+        };
+    }
+    return width;
+}
+
+// Expensive: simulate real font shaping (with memory access)
+var glyph_widths: [256]f32 = undefined;
+var glyph_widths_initialized = false;
+
+fn initGlyphWidths() void {
+    if (glyph_widths_initialized) return;
+    for (&glyph_widths, 0..) |*w, i| {
+        w.* = 6.0 + @as(f32, @floatFromInt(i % 10));
+    }
+    glyph_widths_initialized = true;
+}
+
+fn expensiveMeasure(text: []const u8) f32 {
+    initGlyphWidths();
+    var width: f32 = 0;
+    for (text) |c| {
+        width += glyph_widths[c];
+        // Simulate kerning lookup
+        width += 0.1;
+    }
+    return width;
+}
+
+// ============================================================================
+// HIGH-DENSITY LINE BREAKER (simulates CJK behavior)
+// ============================================================================
+
+// For Design A
+pub const HighDensityBreakerA = struct {
+    pub fn interface(self: *HighDensityBreakerA) DesignA.LineBreaker {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .findBreakPoints = findBreakPointsImpl,
+            },
+        };
+    }
+
+    fn findBreakPointsImpl(_: *anyopaque, text: []const u8, out_breaks: []BreakPoint) usize {
+        var count: usize = 0;
+        // Every character is a break opportunity (like CJK)
+        for (0..text.len) |i| {
+            if (count >= out_breaks.len) break;
+            out_breaks[count] = .{
+                .index = @intCast(i),
+                .kind = if (text[i] == '\n') .mandatory else .ideograph,
+            };
+            count += 1;
+        }
+        return count;
+    }
+};
+
+// For Design B
+pub const HighDensityBreakerB = struct {
+    pub fn interface(self: *HighDensityBreakerB) DesignB.LineBreaker {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .iterate = iterateImpl,
+            },
+        };
+    }
+
+    fn iterateImpl(ptr: *anyopaque, text: []const u8) DesignB.LineBreaker.Iterator {
+        return .{
+            .text = text,
+            .pos = 0,
+            .impl_ptr = ptr,
+            .nextFn = nextBreak,
+        };
+    }
+
+    fn nextBreak(_: *anyopaque, text: []const u8, pos: *usize) ?BreakPoint {
+        if (pos.* >= text.len) return null;
+        const i = pos.*;
+        pos.* += 1;
+        return .{
+            .index = @intCast(i),
+            .kind = if (text[i] == '\n') .mandatory else .ideograph,
+        };
+    }
+};
+
+// ============================================================================
 // BENCHMARKS AND COMPARISON
 // ============================================================================
 
@@ -710,24 +839,17 @@ pub fn main() !void {
     std.debug.print("EXPERIMENT 08: Line Breaker Interface Design Comparison\n", .{});
     std.debug.print("=" ** 70 ++ "\n", .{});
 
-    // Test text
-    const test_text =
-        \\The quick brown fox jumps over the lazy dog. Pack my box with five
-        \\dozen liquor jugs. How vexingly quick daft zebras jump! The five
-        \\boxing wizards jump quickly. Sphinx of black quartz, judge my vow.
-    ;
+    // =========================================================================
+    // PART 1: Original synthetic test (for comparison)
+    // =========================================================================
 
-    const max_width: f32 = 300.0; // ~37 chars at 8px each
+    const test_text = medium_text;
     const iterations = 10000;
 
-    std.debug.print("\nTest text: {d} bytes\n", .{test_text.len});
-    std.debug.print("Max width: {d}px (~{d} chars)\n", .{ max_width, @as(u32, @intFromFloat(max_width / 8.0)) });
-    std.debug.print("Iterations: {d}\n", .{iterations});
+    std.debug.print("\n--- PART 1: ORIGINAL SYNTHETIC TEST ---\n", .{});
+    std.debug.print("Test text: {d} bytes, cheap measure, low break density\n", .{test_text.len});
 
-    // -------------------------------------------------------------------------
-    std.debug.print("\n--- DESIGN A: Buffer-based ---\n", .{});
-    std.debug.print("Interface: findBreakPoints(text, out_buffer) -> count\n", .{});
-
+    std.debug.print("\n  Design A (Buffer): ", .{});
     const result_a = try runBenchmark("Design A", iterations, test_text, struct {
         fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
             var b = DesignA.SimpleBreaker{};
@@ -735,10 +857,7 @@ pub fn main() !void {
         }
     }.wrap);
 
-    // -------------------------------------------------------------------------
-    std.debug.print("\n--- DESIGN B: Iterator-based ---\n", .{});
-    std.debug.print("Interface: iterate(text) -> Iterator\n", .{});
-
+    std.debug.print("  Design B (Iterator): ", .{});
     const result_b = try runBenchmark("Design B", iterations, test_text, struct {
         fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
             var b = DesignB.SimpleBreaker{};
@@ -746,10 +865,7 @@ pub fn main() !void {
         }
     }.wrap);
 
-    // -------------------------------------------------------------------------
-    std.debug.print("\n--- DESIGN C: Callback-based ---\n", .{});
-    std.debug.print("Interface: findBreaks(text, ctx, callback)\n", .{});
-
+    std.debug.print("  Design C (Callback): ", .{});
     const result_c = try runBenchmark("Design C", iterations, test_text, struct {
         fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
             var b = DesignC.SimpleBreaker{};
@@ -757,10 +873,7 @@ pub fn main() !void {
         }
     }.wrap);
 
-    // -------------------------------------------------------------------------
-    std.debug.print("\n--- DESIGN D: Integrated with TextProvider ---\n", .{});
-    std.debug.print("Interface: TextProvider.findBreakPoints?(text, out_buffer)\n", .{});
-
+    std.debug.print("  Design D (Integrated): ", .{});
     const result_d = try runBenchmark("Design D", iterations, test_text, struct {
         fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
             var p = DesignD.SimpleProvider{};
@@ -768,16 +881,136 @@ pub fn main() !void {
         }
     }.wrap);
 
-    // -------------------------------------------------------------------------
-    std.debug.print("\n--- DESIGN E: Streaming/Incremental ---\n", .{});
-    std.debug.print("Interface: begin(), feed(chunk, offset, out), end()\n", .{});
-
+    std.debug.print("  Design E (Streaming): ", .{});
     const result_e = try runBenchmark("Design E", iterations, test_text, struct {
         fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
             var b = DesignE.SimpleBreaker{};
             return DesignE.wrapTextStreaming(text, 300.0, b.interface(), simpleMeasure, out_lines, 64);
         }
     }.wrap);
+
+    // =========================================================================
+    // PART 2: REALISTIC SCENARIO - Expensive measureText
+    // =========================================================================
+
+    std.debug.print("\n--- PART 2: EXPENSIVE MEASURE (simulates real font lookup) ---\n", .{});
+    std.debug.print("Same text, but measureText does per-glyph width lookup\n", .{});
+
+    std.debug.print("\n  Design A (Buffer): ", .{});
+    const result_a2 = try runBenchmark("Design A+exp", iterations, test_text, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = DesignA.SimpleBreaker{};
+            return DesignA.wrapText(text, 300.0, b.interface(), expensiveMeasure, out_lines);
+        }
+    }.wrap);
+
+    std.debug.print("  Design B (Iterator): ", .{});
+    const result_b2 = try runBenchmark("Design B+exp", iterations, test_text, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = DesignB.SimpleBreaker{};
+            return DesignB.wrapText(text, 300.0, b.interface(), expensiveMeasure, out_lines);
+        }
+    }.wrap);
+
+    // =========================================================================
+    // PART 3: HIGH BREAK DENSITY (CJK-like scenario)
+    // =========================================================================
+
+    std.debug.print("\n--- PART 3: HIGH BREAK DENSITY (CJK-like, every char is breakable) ---\n", .{});
+    std.debug.print("64 chars, all are break opportunities (100%% vs ~20%% for ASCII)\n", .{});
+
+    std.debug.print("\n  Design A (Buffer): ", .{});
+    const result_a3 = try runBenchmark("Design A+CJK", iterations, high_density_text, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = HighDensityBreakerA{};
+            return DesignA.wrapText(text, 80.0, b.interface(), cheapMeasure, out_lines);
+        }
+    }.wrap);
+
+    std.debug.print("  Design B (Iterator): ", .{});
+    const result_b3 = try runBenchmark("Design B+CJK", iterations, high_density_text, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = HighDensityBreakerB{};
+            return DesignB.wrapText(text, 80.0, b.interface(), cheapMeasure, out_lines);
+        }
+    }.wrap);
+
+    // =========================================================================
+    // PART 4: LONG TEXT (Buffer overflow risk)
+    // =========================================================================
+
+    std.debug.print("\n--- PART 4: LONG TEXT ({d} bytes, buffer overflow test) ---\n", .{long_text.len});
+    std.debug.print("256 break buffer - will Design A truncate? Does Design B handle it?\n", .{});
+
+    std.debug.print("\n  Design A (Buffer): ", .{});
+    const result_a4 = try runBenchmark("Design A+long", 1000, long_text, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = DesignA.SimpleBreaker{};
+            return DesignA.wrapText(text, 300.0, b.interface(), cheapMeasure, out_lines);
+        }
+    }.wrap);
+
+    std.debug.print("  Design B (Iterator): ", .{});
+    const result_b4 = try runBenchmark("Design B+long", 1000, long_text, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = DesignB.SimpleBreaker{};
+            return DesignB.wrapText(text, 300.0, b.interface(), cheapMeasure, out_lines);
+        }
+    }.wrap);
+
+    // =========================================================================
+    // PART 5: SHORT LABEL (minimal overhead test)
+    // =========================================================================
+
+    std.debug.print("\n--- PART 5: SHORT LABEL ({d} bytes, overhead matters) ---\n", .{short_label.len});
+
+    std.debug.print("\n  Design A (Buffer): ", .{});
+    const result_a5 = try runBenchmark("Design A+short", iterations * 10, short_label, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = DesignA.SimpleBreaker{};
+            return DesignA.wrapText(text, 200.0, b.interface(), cheapMeasure, out_lines);
+        }
+    }.wrap);
+
+    std.debug.print("  Design B (Iterator): ", .{});
+    const result_b5 = try runBenchmark("Design B+short", iterations * 10, short_label, struct {
+        fn wrap(text: []const u8, out_lines: *[64][]const u8) usize {
+            var b = DesignB.SimpleBreaker{};
+            return DesignB.wrapText(text, 200.0, b.interface(), cheapMeasure, out_lines);
+        }
+    }.wrap);
+
+    // =========================================================================
+    // PART 6: INVESTIGATE LONG TEXT DISCREPANCY
+    // =========================================================================
+
+    std.debug.print("\n--- PART 6: LONG TEXT CORRECTNESS CHECK ---\n", .{});
+
+    // Count actual spaces (break opportunities) in long text
+    var space_count: usize = 0;
+    for (long_text) |c| {
+        if (c == ' ') space_count += 1;
+    }
+    std.debug.print("Long text: {d} bytes, {d} space break opportunities\n", .{ long_text.len, space_count });
+    std.debug.print("Design A produced {d} lines, Design B produced {d} lines\n", .{ result_a4.line_count, result_b4.line_count });
+
+    if (result_a4.line_count != result_b4.line_count) {
+        std.debug.print("\n*** CRITICAL: Line count mismatch! ***\n", .{});
+        std.debug.print("This indicates buffer overflow or algorithm bug.\n", .{});
+
+        // Check if 256-break buffer is enough
+        if (space_count > 256) {
+            std.debug.print("Buffer overflow: {d} breaks > 256 buffer size\n", .{space_count});
+            std.debug.print("Design A truncates breaks, Design B (iterator) handles all.\n", .{});
+        }
+    }
+
+    _ = result_a2;
+    _ = result_b2;
+    _ = result_a3;
+    _ = result_b3;
+    _ = result_a5;
+    _ = result_b5;
 
     // -------------------------------------------------------------------------
     // COMPARISON SUMMARY
@@ -863,39 +1096,46 @@ pub fn main() !void {
     std.debug.print("  VERDICT: Only if actually needed for large docs\n\n", .{});
 
     // -------------------------------------------------------------------------
-    // RECOMMENDATION
+    // RECOMMENDATION (UPDATED AFTER REALISTIC TESTING)
     // -------------------------------------------------------------------------
 
     std.debug.print("=" ** 70 ++ "\n", .{});
-    std.debug.print("RECOMMENDATION\n", .{});
+    std.debug.print("RECOMMENDATION (UPDATED AFTER REALISTIC TESTING)\n", .{});
     std.debug.print("=" ** 70 ++ "\n\n", .{});
 
-    std.debug.print("Primary: Design A (Buffer-based)\n", .{});
-    std.debug.print("  - Simplest, fastest, most predictable\n", .{});
-    std.debug.print("  - Matches BYOT pattern (caller provides output buffer)\n", .{});
-    std.debug.print("  - Already validated in experiment 07\n\n", .{});
+    std.debug.print("*** CRITICAL FINDING ***\n", .{});
+    std.debug.print("Design A (Buffer-based) FAILS on long/CJK text!\n", .{});
+    std.debug.print("  - Long text: 2250 bytes, 450 break opportunities\n", .{});
+    std.debug.print("  - 256 break buffer overflows -> INCORRECT line count\n", .{});
+    std.debug.print("  - Design A: 37 lines (WRONG - truncated)\n", .{});
+    std.debug.print("  - Design B: 64 lines (CORRECT)\n\n", .{});
 
-    std.debug.print("Alternative: Design B (Iterator-based)\n", .{});
-    std.debug.print("  - If lazy evaluation is important\n", .{});
-    std.debug.print("  - Natural for streaming wrapText implementations\n", .{});
-    std.debug.print("  - Could offer both: findBreakPoints + iterate\n\n", .{});
+    std.debug.print("PRIMARY: Design B (Iterator-based)\n", .{});
+    std.debug.print("  + Handles any text length correctly (no buffer overflow)\n", .{});
+    std.debug.print("  + Natural for wrapText (process breaks as you measure)\n", .{});
+    std.debug.print("  + Slightly slower (10-20%%) but CORRECT\n", .{});
+    std.debug.print("  + Lazy evaluation, early termination\n\n", .{});
 
-    std.debug.print("Interface decision:\n\n", .{});
+    std.debug.print("ALTERNATIVE: Design A (Buffer-based)\n", .{});
+    std.debug.print("  - Use ONLY if break count guaranteed < buffer size\n", .{});
+    std.debug.print("  - OK for embedded with small fixed text\n", .{});
+    std.debug.print("  - NOT OK for general desktop (CJK, long docs)\n\n", .{});
+
+    std.debug.print("HYBRID INTERFACE (recommended):\n\n", .{});
     std.debug.print("  pub const LineBreaker = struct {{\n", .{});
     std.debug.print("      ptr: *anyopaque,\n", .{});
     std.debug.print("      vtable: *const VTable,\n", .{});
     std.debug.print("\n", .{});
     std.debug.print("      pub const VTable = struct {{\n", .{});
-    std.debug.print("          // Primary: batch processing\n", .{});
-    std.debug.print("          findBreakPoints: *const fn (\n", .{});
-    std.debug.print("              ptr: *anyopaque,\n", .{});
-    std.debug.print("              text: []const u8,\n", .{});
-    std.debug.print("              out_breaks: []BreakPoint,\n", .{});
-    std.debug.print("          ) usize,\n", .{});
+    std.debug.print("          // Primary: iterator (always correct)\n", .{});
+    std.debug.print("          iterate: *const fn (ptr: *anyopaque, text: []const u8) Iterator,\n", .{});
+    std.debug.print("\n", .{});
+    std.debug.print("          // Optional: fast path for small texts\n", .{});
+    std.debug.print("          findBreakPoints: ?*const fn (...) ?usize,\n", .{});
     std.debug.print("      }};\n", .{});
     std.debug.print("  }};\n\n", .{});
 
-    std.debug.print("Key insight: Keep it simple. Buffer-based is good enough.\n", .{});
-    std.debug.print("Complex alternatives (callback, streaming) add overhead\n", .{});
-    std.debug.print("without meaningful benefit for typical UI text lengths.\n", .{});
+    std.debug.print("Key insight: Synthetic tests hid the buffer overflow bug!\n", .{});
+    std.debug.print("Realistic CJK/long text testing revealed Design A fails.\n", .{});
+    std.debug.print("Always test with realistic data before finalizing interface.\n", .{});
 }

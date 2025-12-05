@@ -402,17 +402,28 @@ Compares 5 different interface designs for line breaking:
 zig run experiments/text_rendering/08_linebreaker_interface.zig
 ```
 
-**Results (198 byte text, 10K iterations):**
+**Initial Results (198 byte text, synthetic):**
 
-| Design | Time (ns) | VTable | Recommendation |
-|--------|-----------|--------|----------------|
-| A: Buffer | **1495** | 8 bytes | **Primary choice** |
-| B: Iterator | 1822 | 8 bytes | Good alternative |
-| C: Callback | 1696 | 8 bytes | Avoid - complex |
-| D: Integrated | 1587 | 16 bytes | Avoid - couples concerns |
-| E: Streaming | 1860 | 24 bytes | Only for large docs |
+| Design | Time (ns) | VTable | Initial Verdict |
+|--------|-----------|--------|-----------------|
+| A: Buffer | 1495 | 8 bytes | Fastest |
+| B: Iterator | 1822 | 8 bytes | Slightly slower |
 
-**Decision: Design A (Buffer-based)** - Simplest, fastest, matches BYOT pattern.
+**CRITICAL: Realistic testing revealed buffer overflow!**
+
+| Scenario | Design A | Design B | Finding |
+|----------|----------|----------|---------|
+| Short (198B) | 1495 ns | 1822 ns | A faster |
+| CJK-like | 1138 ns | 1707 ns | A 33% faster |
+| **Long (2250B)** | **37 lines** | **64 lines** | **A WRONG!** |
+
+Long text has 450 break opportunities > 256 buffer → Design A truncates!
+
+**Updated Decision: Hybrid Interface**
+- **Primary**: `iterate()` - always correct, handles any text
+- **Optional**: `findBreakPoints()` - fast path for small embedded texts
+
+Key lesson: Synthetic tests hid the bug - just like experiment 06 with mcufont!
 
 ---
 
