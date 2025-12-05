@@ -94,16 +94,63 @@ pub const TextProvider = struct {
         beginFrame: *const fn (ptr: *anyopaque) void,
         endFrame: *const fn (ptr: *anyopaque) void,
 
+        // Cursor/Selection (required for text input) ──────
+        // Validated by Experiment 11
+
+        /// Character positions for cursor/selection.
+        /// Returns GRAPHEME count (may be < text.len for UTF-8).
+        /// Provider handles grapheme segmentation internally.
+        ///   - ASCII provider: 1 position per byte
+        ///   - UTF-8 provider: 1 position per grapheme cluster
+        getCharPositions: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            font_id: u16,
+            size: f32,
+            out: []f32,
+        ) usize,
+
         // Extensions (optional, null = not supported) ─────
 
-        /// For text input cursor placement
-        getCharPositions: ?*const fn (...) usize,
+        /// For bidi text: hit test visual x → logical index.
+        /// REQUIRED for RTL scripts. Null = LTR-only (use binary search).
+        /// Experiment 11 proved: binary search FAILS for bidi text.
+        hitTest: ?*const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            font_id: u16,
+            size: f32,
+            visual_x: f32,
+        ) HitTestResult,
+
+        /// For bidi text: get caret info including split caret.
+        /// Null = use positions[index] fallback (LTR only).
+        getCaretInfo: ?*const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            font_id: u16,
+            size: f32,
+            logical_index: usize,
+        ) CaretInfo,
 
         /// For complex scripts (Arabic, Devanagari)
         shapeText: ?*const fn (...) usize,
 
         /// For runtime font loading
         loadFont: ?*const fn (...) ?u16,
+    };
+
+    // Cursor types (validated by Experiment 11)
+
+    pub const HitTestResult = struct {
+        logical_index: usize,  // Index in logical (storage) order
+        trailing: bool,        // Before (false) or after (true) character
+    };
+
+    pub const CaretInfo = struct {
+        primary_x: f32,     // Main caret position
+        secondary_x: ?f32,  // Split caret at RTL/LTR boundary (null if none)
+        is_rtl: bool,       // Text direction at this position
     };
 };
 ```
@@ -675,7 +722,7 @@ All options fit comfortably in 32KB budget (~26% used).
 
 Bidi (bidirectional text) for Arabic, Hebrew, and mixed scripts is explicitly **deferred to Phase 3**.
 
-### Why Bidi is Hard
+### Why Bidi is Hard (Validated by Experiment 11)
 
 For LTR text, visual position equals logical position:
 ```
@@ -693,35 +740,54 @@ Visual:     H e l l o   ם ו ל ש     W o r l d
 Visual x:   0 8 ... 40  72 64 56 48 80 ...
 ```
 
-Complications:
-1. **Hit testing**: Click at x=60 → which logical index? (It's 7, not 8!)
-2. **Cursor movement**: Right arrow from pos 5 goes to pos 10 (skip RTL run), then left arrow goes through RTL
+**Experiment 11 proved these complications with actual tests:**
+
+1. **Hit testing FAILS with binary search**:
+   - Click at x=60 with binary search → index 9 (WRONG)
+   - Proper bounds check → logical index 8 (CORRECT)
+   - **Tested**: Binary search on positions array is insufficient for bidi
+
+2. **Selection produces multiple rectangles**:
+   - Logical selection [4,8) in mixed text
+   - **Tested**: Produces 2 rectangles, not 1
+   - Visual selection is non-contiguous
+
 3. **Split caret**: Cursor at RTL/LTR boundary needs TWO carets
-4. **Selection**: Visual selection may be non-contiguous in logical space
+4. **Cursor movement**: Right arrow from pos 5 goes to pos 10 (skip RTL run)
 
-### Current Interface is Future-Proof
+### Interface Design (Validated by Experiment 11)
 
-The current design CAN support bidi with minimal changes:
+The interface now includes bidi support as optional extensions:
 
 ```zig
-// Current (sufficient for LTR)
+// REQUIRED - Returns GRAPHEME positions (not bytes)
+// Provider handles grapheme segmentation internally
 getCharPositions: *const fn (ptr, text, style, out: []f32) usize,
 
-// Phase 3 additions (optional, null = not supported)
+// OPTIONAL - For bidi (null = LTR only, use binary search fallback)
 hitTest: ?*const fn (ptr, text, style, visual_x: f32) HitTestResult,
 getCaretInfo: ?*const fn (ptr, text, style, logical_index: usize) CaretInfo,
 
-const HitTestResult = struct {
-    logical_index: usize,
-    trailing: bool,  // Before or after character
+pub const HitTestResult = struct {
+    logical_index: usize,  // Index in logical (storage) order
+    trailing: bool,        // Before (false) or after (true) character
 };
 
-const CaretInfo = struct {
-    primary_x: f32,    // Main caret position
-    secondary_x: ?f32, // Split caret (at RTL/LTR boundary)
-    is_rtl: bool,      // Direction at this position
+pub const CaretInfo = struct {
+    primary_x: f32,     // Main caret position
+    secondary_x: ?f32,  // Split caret at RTL/LTR boundary (null if none)
+    is_rtl: bool,       // Text direction at this position
 };
 ```
+
+**Key Design Decisions (from Experiment 11 validation):**
+
+| Decision | Rationale | Validated By |
+|----------|-----------|--------------|
+| Graphemes in provider | Provider knows encoding, no extra interface | Test: byte vs grapheme positions |
+| Optional hitTest | Zero cost for LTR-only | Test: binary search works for LTR |
+| Optional getCaretInfo | Split caret only for bidi | Analysis: LTR uses positions[i] |
+| No CharInfo array | Avoid 12 bytes/char overhead | Memory analysis |
 
 ### What This Means for Phase 1-2
 
@@ -732,10 +798,10 @@ const CaretInfo = struct {
 
 ### Phase 3 Plan
 
-1. Add optional `hitTest()` to TextProvider vtable
-2. Add optional `getCaretInfo()` for split caret rendering
-3. Consider HarfBuzz/RustyBuzz integration for shaping
-4. Test with Arabic and Hebrew text
+1. ✓ Interface designed: `hitTest()` and `getCaretInfo()` in vtable (optional)
+2. Implement bidi-aware provider (wraps HarfBuzz/RustyBuzz)
+3. Handle selection rectangle calculation for non-contiguous regions
+4. Test with Arabic and Hebrew text input
 
 ---
 
