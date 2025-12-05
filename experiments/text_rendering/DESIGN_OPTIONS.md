@@ -300,7 +300,7 @@ Typical buffer (64 break points): 512 bytes
 
 ## Open Decisions
 
-### 1. ~~Line Breaking~~ ✓ RESOLVED
+### 1. ~~Line Breaking~~ ✓ RESOLVED (Validated 2025)
 
 **Decision**: BYOL (Bring Your Own Line Breaker)
 
@@ -310,6 +310,42 @@ Separate `LineBreaker` interface, consistent with BYOR/BYOT philosophy.
 - GUI provides `wrapText()` helper that composes LineBreaker + TextProvider
 
 See "Line Breaking: BYOL" section above for full specification.
+
+**Validation via State-of-the-Art Research (2024-2025):**
+
+The BYOL approach is validated by current industry and academic research:
+
+| Research Area | Finding | BYOL Alignment |
+|---------------|---------|----------------|
+| CSS `text-wrap: pretty` | Browsers implement multiple strategies (greedy, orphan-aware, full optimization) | Tiered implementations match |
+| icu_segmenter | Official Unicode Rust crate, 5MB+ data for full i18n | Justifies not embedding UAX #14 |
+| Knuth-Plass 2024 | Still active research (ACM DocEng 2024 paper on similarity problems) | Complex typography needs external impl |
+| cosmic-text | Uses `unicode-linebreak` crate externally | Same BYOL pattern in production |
+| Safari Tech Preview 216 | Full paragraph optimization, not just orphans | Optimal breaking is opt-in |
+
+**Algorithm Complexity Summary:**
+
+| Algorithm | Time | Space | Use Case |
+|-----------|------|-------|----------|
+| SimpleBreaker (ASCII) | O(n) | O(1) | Embedded, English-only |
+| GreedyBreaker (CJK) | O(n) | O(1) | Desktop, most scripts |
+| UAX #14 (icu_segmenter) | O(n) | ~1.2MB data | Full internationalization |
+| Knuth-Plass | O(n²) or O(n) | O(n) | Publishing, books |
+
+**Why not embed full UAX #14:**
+1. Data size: icu_segmenter baked data is ~1.2MB, ICU package is 5MB+
+2. Platforms have it: macOS CTLine, Win32 Uniscribe, Android Minikin
+3. Overkill for embedded: ASCII-only needs ~50 lines of code
+4. Maintenance: Unicode updates annually, tracking is overhead
+
+**Sources:**
+- [UAX #14: Unicode Line Breaking Algorithm](http://www.unicode.org/reports/tr14/)
+- [icu_segmenter crate](https://crates.io/crates/icu_segmenter) - Official Unicode implementation
+- [CSS text-wrap: pretty](https://developer.chrome.com/blog/css-text-wrap-pretty) - Chrome implementation
+- [WebKit text-wrap: pretty](https://webkit.org/blog/16547/better-typography-with-text-wrap-pretty/) - Safari's enhanced implementation
+- [Similarity Problems in Paragraph Justification](https://dl.acm.org/doi/10.1145/3685650.3685666) - ACM DocEng 2024
+- [cosmic-text](https://github.com/pop-os/cosmic-text) - Rust multi-line text handling
+- [Raph Levien: Text Layout is a Loose Hierarchy](https://raphlinus.github.io/text/2020/10/26/text-layout.html)
 
 ### 2. Font Fallback
 

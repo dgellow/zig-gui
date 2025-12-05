@@ -393,12 +393,18 @@ zig run experiments/text_rendering/07_line_breaker.zig
 
 ## Open Questions to Resolve
 
-1. **~~Where does line breaking live?~~** ✓ RESOLVED
+1. **~~Where does line breaking live?~~** ✓ RESOLVED & VALIDATED (2025)
    - **Answer: BYOL (Bring Your Own Line Breaker)**
    - Separate `LineBreaker` interface, consistent with BYOR/BYOT pattern
    - Ships with `SimpleBreaker` (ASCII) and `GreedyBreaker` (CJK)
    - Users can bring UAX #14, ICU, or platform implementations
    - See experiment 07 and DESIGN_OPTIONS.md
+
+   **Validated against 2024-2025 research:**
+   - Industry: CSS `text-wrap: pretty` (Chrome, Safari, Firefox) uses tiered strategies
+   - Unicode: `icu_segmenter` Rust crate is 1.2MB+ for full UAX #14 (too big for embedded)
+   - Production: cosmic-text uses external `unicode-linebreak` crate (same BYOL pattern)
+   - Academia: Knuth-Plass still active (ACM DocEng 2024 paper on similarity problems)
 
 2. **How do we handle text input cursors?**
    - `getCharPositions()` is O(n) for every cursor move
@@ -446,3 +452,11 @@ zig run experiments/text_rendering/07_line_breaker.zig
 - [Dear ImGui fonts](https://github.com/ocornut/imgui/blob/master/docs/FONTS.md)
 - [Unity font assets](https://docs.unity3d.com/Manual/UIE-font-asset.html)
 - [Unreal font overview](https://docs.unrealengine.com/4.26/en-US/InteractiveExperiences/UMG/UserGuide/Fonts/Overview)
+
+### Line Breaking Research (2024-2025)
+- [UAX #14: Unicode Line Breaking Algorithm](http://www.unicode.org/reports/tr14/) - Official Unicode spec
+- [icu_segmenter](https://crates.io/crates/icu_segmenter) - Official Rust implementation (Unicode org)
+- [CSS text-wrap: pretty](https://developer.chrome.com/blog/css-text-wrap-pretty) - Chrome implementation
+- [WebKit text-wrap: pretty](https://webkit.org/blog/16547/better-typography-with-text-wrap-pretty/) - Safari's enhanced implementation
+- [Similarity Problems in Paragraph Justification](https://dl.acm.org/doi/10.1145/3685650.3685666) - ACM DocEng 2024
+- [Raph Levien: Text Layout is a Loose Hierarchy](https://raphlinus.github.io/text/2020/10/26/text-layout.html) - Architecture insights
