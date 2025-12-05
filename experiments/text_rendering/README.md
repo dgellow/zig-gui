@@ -490,6 +490,59 @@ pub const LineBreaker = struct {
 Key insight: **measureText() dominates execution time (85%+), not the interface choice!**
 Simplest interface wins - one method in vtable = easiest to implement correctly.
 
+### Experiment 10: Text Input Cursor & Selection (`10_text_input_cursor.zig`)
+
+Validates the text input workflow:
+- Click → find character index under cursor (hit testing)
+- Arrow keys → move cursor by one logical position
+- Shift+Arrow → extend selection
+- Double-click → select word
+- Triple-click → select line
+
+```bash
+zig run experiments/text_rendering/10_text_input_cursor.zig
+```
+
+**Key Findings:**
+
+| Workflow | Current Interface | Solution |
+|----------|-------------------|----------|
+| Click → char index | `getCharPositions()` | Binary search on positions |
+| Cursor rendering | `positions[cursor.focus]` | Direct lookup |
+| Selection highlight | `positions[start..end]` | Range of positions |
+| Word/line selection | TextField handles | ASCII: split on spaces/`\n` |
+
+**Interface Assessment:**
+- **LTR (Phase 1-2)**: Current `getCharPositions()` is **sufficient**
+- **Bidi (Phase 3)**: Need `hitTest(text, x) -> {index, trailing}` as optional extension
+
+**Caching Strategy:**
+```
+TextField caches positions internally:
+- Invalidate on text change
+- Recompute lazily on next hit test / render
+- O(n) cost amortized over many cursor operations
+```
+
+**Critical Limitation - Bidi Deferred:**
+
+For RTL text (Arabic, Hebrew), visual position ≠ logical position:
+```
+Logical: H e l l o   ש ל ו ם   W o r l d
+Visual:  H e l l o   ם ו ל ש   W o r l d
+                     ← RTL →
+```
+
+Bidi requires:
+- Shaping (reorder characters for display)
+- Bidirectional hit testing (click x → logical index)
+- Split cursor (caret at RTL/LTR boundary)
+
+**Decision: Defer bidi to Phase 3**, but document now that:
+1. `getCharPositions()` returns **visual** positions (correct)
+2. For bidi, add optional `hitTest(text, visual_x) -> HitTestResult`
+3. Provider handles bidi complexity internally
+
 ---
 
 ## Open Questions to Resolve
@@ -507,10 +560,12 @@ Simplest interface wins - one method in vtable = easiest to implement correctly.
    - Production: cosmic-text uses external `unicode-linebreak` crate (same BYOL pattern)
    - Academia: Knuth-Plass still active (ACM DocEng 2024 paper on similarity problems)
 
-2. **How do we handle text input cursors?**
-   - `getCharPositions()` is O(n) for every cursor move
-   - Cache char positions? Where?
-   - Incremental updates?
+2. **~~How do we handle text input cursors?~~** ✓ RESOLVED (Experiment 10)
+   - **Answer: Current `getCharPositions()` is sufficient for LTR**
+   - Cache positions in TextField (invalidate on text change)
+   - Hit testing: binary search on returned positions
+   - See experiment 10 for full analysis
+   - **LIMITATION: Bidi (RTL) deferred to Phase 3** - see below
 
 3. **Font fallback: whose responsibility?**
    - User provides fallback chain?
