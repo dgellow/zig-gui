@@ -349,33 +349,51 @@ The BYOL approach is validated by current industry and academic research:
 
 **Interface Design Validation (Experiment 08):**
 
-Compared 5 interface patterns for the LineBreaker:
+Initial synthetic test (198 bytes, low break density):
 
-| Design | Time (ns) | VTable | Verdict |
-|--------|-----------|--------|---------|
-| A: Buffer-based | **1495** | 8 bytes | **Primary choice** |
-| B: Iterator | 1822 | 8 bytes | Good alternative |
-| C: Callback | 1696 | 8 bytes | Avoid - complex context |
-| D: Integrated | 1587 | 16 bytes | Avoid - couples concerns |
-| E: Streaming | 1860 | 24 bytes | Only for large docs |
+| Design | Time (ns) | VTable | Initial Verdict |
+|--------|-----------|--------|-----------------|
+| A: Buffer-based | 1495 | 8 bytes | Fastest |
+| B: Iterator | 1822 | 8 bytes | Slightly slower |
 
-**Final Interface (validated):**
+**CRITICAL: Realistic testing revealed buffer overflow bug!**
+
+| Scenario | Design A | Design B | Finding |
+|----------|----------|----------|---------|
+| Short text (198B) | 1495 ns | 1822 ns | A faster |
+| CJK (high density) | 1138 ns | 1707 ns | A 33% faster |
+| **Long text (2250B)** | **37 lines** | **64 lines** | **A WRONG!** |
+
+Long text has 450 break opportunities > 256 buffer → Design A truncates!
+
+**Updated Recommendation: Hybrid Interface**
+
 ```zig
 pub const LineBreaker = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        findBreakPoints: *const fn (
+        // Primary: iterator (always correct, no buffer overflow)
+        iterate: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+        ) Iterator,
+
+        // Optional: fast path for small known texts
+        findBreakPoints: ?*const fn (
             ptr: *anyopaque,
             text: []const u8,
             out_breaks: []BreakPoint,
-        ) usize,
+        ) ?usize,  // Returns null if would overflow
     };
 };
 ```
 
-Key insight: Buffer-based is simplest, fastest, and matches the BYOT pattern.
+- **Desktop**: Use `iterate()` - handles any text length correctly
+- **Embedded**: Use `findBreakPoints()` - faster for small fixed buffers
+
+Key insight: Synthetic tests hid the buffer overflow bug. Always test with realistic data!
 
 ### 2. Font Fallback
 
