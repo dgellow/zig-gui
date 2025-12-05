@@ -310,9 +310,11 @@ Iterator approach:                16 bytes   (no buffer needed)
    - Atlas packing with overflow pages
    - Runtime font loading
 
-5. **Add cursor support**:
-   - Implement `getCharPositions`
-   - Enable text input fields
+5. **Add cursor support** (validated by Experiment 10):
+   - Implement `getCharPositions` (returns visual x positions)
+   - TextField caches positions, invalidates on text change
+   - Hit testing: binary search on positions array
+   - **LTR only in Phase 2** - see Bidi limitation below
 
 ### Phase 3: Advanced Features
 
@@ -324,6 +326,12 @@ Iterator approach:                16 bytes   (no buffer needed)
 7. **Complex script shaping** (optional):
    - Interface with HarfBuzz/RustyBuzz
    - Or: simple kerning-only fallback
+
+8. **Bidi (RTL) support** (DEFERRED):
+   - Add optional `hitTest(text, visual_x) -> HitTestResult`
+   - Add optional `getCaretPositions(text, index) -> CaretInfo`
+   - Provider handles visual↔logical mapping internally
+   - See "Bidi Limitation" section below
 
 ---
 
@@ -658,6 +666,76 @@ Output: font.bin (7,079 bytes)
 ```
 
 All options fit comfortably in 32KB budget (~26% used).
+
+---
+
+## Bidi Limitation (IMPORTANT)
+
+**Phase 1-2 supports LTR (left-to-right) text only.**
+
+Bidi (bidirectional text) for Arabic, Hebrew, and mixed scripts is explicitly **deferred to Phase 3**.
+
+### Why Bidi is Hard
+
+For LTR text, visual position equals logical position:
+```
+Text:       H e l l o   W o r l d
+Logical:    0 1 2 3 4 5 6 7 8 9 10
+Visual x:   0 8 16 ...
+```
+
+For mixed RTL/LTR (e.g., "Hello שלום World"):
+```
+Stored:     H e l l o   ש ל ו ם     W o r l d
+Logical:    0 1 2 3 4 5 6 7 8 9 10 11 12 ...
+Visual:     H e l l o   ם ו ל ש     W o r l d
+                        ← RTL →
+Visual x:   0 8 ... 40  72 64 56 48 80 ...
+```
+
+Complications:
+1. **Hit testing**: Click at x=60 → which logical index? (It's 7, not 8!)
+2. **Cursor movement**: Right arrow from pos 5 goes to pos 10 (skip RTL run), then left arrow goes through RTL
+3. **Split caret**: Cursor at RTL/LTR boundary needs TWO carets
+4. **Selection**: Visual selection may be non-contiguous in logical space
+
+### Current Interface is Future-Proof
+
+The current design CAN support bidi with minimal changes:
+
+```zig
+// Current (sufficient for LTR)
+getCharPositions: *const fn (ptr, text, style, out: []f32) usize,
+
+// Phase 3 additions (optional, null = not supported)
+hitTest: ?*const fn (ptr, text, style, visual_x: f32) HitTestResult,
+getCaretInfo: ?*const fn (ptr, text, style, logical_index: usize) CaretInfo,
+
+const HitTestResult = struct {
+    logical_index: usize,
+    trailing: bool,  // Before or after character
+};
+
+const CaretInfo = struct {
+    primary_x: f32,    // Main caret position
+    secondary_x: ?f32, // Split caret (at RTL/LTR boundary)
+    is_rtl: bool,      // Direction at this position
+};
+```
+
+### What This Means for Phase 1-2
+
+1. **Text input works** for English, other Latin scripts, CJK (LTR context)
+2. **Don't use RTL scripts** in text input fields
+3. **Display-only RTL** may work if shaping is handled externally
+4. **Document the limitation** in user-facing docs
+
+### Phase 3 Plan
+
+1. Add optional `hitTest()` to TextProvider vtable
+2. Add optional `getCaretInfo()` for split caret rendering
+3. Consider HarfBuzz/RustyBuzz integration for shaping
+4. Test with Arabic and Hebrew text
 
 ---
 
