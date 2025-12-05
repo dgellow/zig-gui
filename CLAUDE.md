@@ -208,9 +208,138 @@ zig_gui_app_destroy(app);
 zig_gui_platform_destroy(platform);
 ```
 
+## Design Process for New Features
+
+When designing new features or interfaces, follow this validated process:
+
+### Phase 1: Survey State of the Art
+
+Before making any decision, conduct a comprehensive survey:
+
+```
+1. Search academic papers (ACM, IEEE, arXiv)
+2. Search industry implementations:
+   - Browsers (Chrome, Firefox, Safari)
+   - Game engines (Unity, Unreal, Dear ImGui)
+   - UI frameworks (Qt, Flutter, Bevy)
+   - Rust ecosystem (cosmic-text, fontique, swash)
+3. Document findings with sources
+4. Identify patterns and trade-offs
+```
+
+### Phase 2: Create Realistic Experiment
+
+**Never decide based on theoretical analysis alone.**
+
+Create an experiment file (e.g., `experiments/text_rendering/13_font_fallback.zig`) that:
+
+```
+1. Defines realistic scenarios (not synthetic tests!)
+   - Embedded: thermostat, config input
+   - Desktop: email, code editor, CJK
+   - Games: HUD, leaderboard, MMO chat
+   - Edge cases: missing glyphs, rare scripts
+
+2. Implements multiple strategies to compare
+
+3. Measures what matters:
+   - Performance (lookups, cache hits)
+   - Correctness (Han unification, .notdef)
+   - User burden (config complexity)
+
+4. Produces concrete recommendations
+```
+
+### Phase 3: Document Decision
+
+After experiment validates the approach:
+
+1. Update `README.md` with experiment summary
+2. Update `DESIGN_OPTIONS.md` with full decision rationale
+3. Include:
+   - Options evaluated with verdicts
+   - Final decision in ASCII box diagram
+   - Updated interface/config
+   - Recommendations by target
+   - State-of-the-art validation table
+   - Sources/references
+
+### Example: Font Fallback Decision Process
+
+```
+Phase 1: Survey
+├── Chrome: Hard-coded script-to-font map
+├── Firefox: Dynamic search up to 32 fonts
+├── DirectWrite/CoreText: Platform APIs
+├── Dear ImGui: MergeMode font stacking
+├── cosmic-text: Chrome/Firefox static lists
+└── Finding: No universal standard
+
+Phase 2: Experiment (13_font_fallback.zig)
+├── 26 realistic scenarios
+├── Linear vs Locale-Aware strategies
+├── Han unification validation
+└── Finding: User chain + locale tag works
+
+Phase 3: Decision
+├── User provides fallback chain ✓
+├── Locale tag for Han unification ✓
+├── NO BYOFF (pluggable fallback) ✗
+└── Platform query (optional helper) ✗
+```
+
+### Key Principles
+
+1. **Config over Interface**: When there's no consensus, make it config
+   - Atlas strategy: `.shelf_lru` not BYOFM interface
+   - Fallback locale: `"ja"` not BYOFF interface
+
+2. **Survey Before Deciding**: Always check what industry does
+   - Chrome, Firefox, Unity, ImGui often converge
+   - Academic papers reveal edge cases
+
+3. **Realistic Over Synthetic**:
+   - Experiment 06: Synthetic said RLE works; real fonts expand!
+   - Experiment 08: Short text worked; CJK truncated!
+   - Experiment 13: Han unification only visible with locale test
+
+4. **Document Everything**:
+   - Future you will forget why
+   - Others need to understand trade-offs
+   - Sources allow verification
+
+### Template for New Design Decisions
+
+```markdown
+### N. ~~Topic~~ ✓ RESOLVED (Experiment XX)
+
+**Decision**: [One-line summary]
+
+**Options Evaluated**:
+| Option | Description | Verdict |
+|--------|-------------|---------|
+| A) ... | ... | ✓/✗ |
+
+**Final Decision**:
+[ASCII box with key points]
+
+**Experiment XX Key Results**:
+| Metric | Option A | Option B |
+|--------|----------|----------|
+
+**2025 State-of-the-Art Validation**:
+| Source | Approach | Alignment |
+|--------|----------|-----------|
+
+**Sources**:
+- Experiment: `experiments/.../XX_topic.zig`
+- [Reference 1](url)
+```
+
 ## References
 
 - `DESIGN.md` - Complete technical design
 - `BENCHMARKS.md` - Performance measurements (source of truth)
+- `experiments/text_rendering/` - Design experiments and validation
 - `src/layout/engine.zig` - Layout implementation
 - `src/tracked.zig` - State management implementation
