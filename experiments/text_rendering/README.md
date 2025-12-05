@@ -334,6 +334,43 @@ zig build-exe -lc -lm -I. stb_truetype_impl.c 05_stb_integration.zig -femit-bin=
 ./05_stb_integration
 ```
 
+### Experiment 6: Embedded E2E with Real Fonts (`06_embedded_e2e.zig`)
+
+**Critical finding that changed our compression strategy!**
+
+Tests the full embedded pipeline with real TTF font data:
+- Rasterizes glyphs using stb_truetype (simulates build-time)
+- Compresses with three algorithms (none, RLE, MCUFont)
+- Decodes and renders (simulates runtime)
+- Measures real-world compression and performance
+
+```bash
+cd experiments/text_rendering
+zig build-exe -lc -I. stb_truetype_impl.c 06_embedded_e2e.zig -femit-bin=06_embedded_e2e
+./06_embedded_e2e
+```
+
+**Key Discovery - Real vs Synthetic Font Data:**
+
+| Metric | Synthetic (Exp 2) | Real Font (Exp 6) |
+|--------|-------------------|-------------------|
+| Black (0) | ~85% | **39.7%** |
+| White (255) | ~10% | **2.5%** |
+| Intermediate | ~5% | **57.8%** |
+
+**Compression Results (16px DejaVu Sans, 95 ASCII):**
+
+| Algorithm | Size | Ratio | Decode Speed |
+|-----------|------|-------|--------------|
+| None (raw) | 7,079 B | 1.0x | 124 ns |
+| SimpleRLE | 10,004 B | **0.7x** (EXPANSION!) | 1,028 ns |
+| MCUFont | 5,542 B | **1.3x** | 2,143 ns |
+
+**Updated Recommendation:**
+- **1-bit fonts**: SimpleRLE works great (~3x compression)
+- **8-bit AA fonts**: MCUFont or raw (RLE expands due to no runs)
+- Compile flag approach still valid
+
 ### Experiment 7: Line Breaking Interface (`07_line_breaker.zig`)
 
 Validates the BYOL (Bring Your Own Line Breaker) pattern:
