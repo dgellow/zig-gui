@@ -172,14 +172,15 @@ pub const LineBreaker = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// Find valid break positions in text.
-        /// Caller provides output buffer (zero allocation).
-        findBreakPoints: *const fn (
-            ptr: *anyopaque,
-            text: []const u8,
-            out_breaks: []BreakPoint,
-        ) usize,
+        /// Single method: returns iterator for break points.
+        /// See "Final Interface Decision" section below for full API.
+        iterate: *const fn (ptr: *anyopaque, text: []const u8) Iterator,
     };
+
+    // Convenience methods built on iterate():
+    // - countBreaks(text) -> usize
+    // - collectBreaks(text, out) -> usize
+    // - iterate(text) -> Iterator
 
     pub const BreakPoint = struct {
         index: u32,       // Byte offset (break allowed AFTER this index)
@@ -230,14 +231,40 @@ fn wrapText(
     text_provider: TextProvider,
     font_id: u16,
     size: f32,
-) []Line {
-    // 1. Get break points from line_breaker
-    var breaks: [256]LineBreaker.BreakPoint = undefined;
-    const break_count = line_breaker.findBreakPoints(text, &breaks);
+    out_lines: []Line,
+) usize {
+    var iter = line_breaker.iterate(text);
+    var line_start: usize = 0;
+    var line_count: usize = 0;
+    var current_width: f32 = 0;
+    var last_break: ?LineBreaker.BreakPoint = null;
 
-    // 2. Measure segments using text_provider
-    // 3. Accumulate until overflow
-    // 4. Return line positions
+    while (iter.next()) |bp| {
+        const segment = text[line_start..bp.index];
+        const segment_width = text_provider.measureText(segment, font_id, size).width;
+
+        if (current_width + segment_width > max_width) {
+            // Overflow: break at last valid point
+            if (last_break) |lb| {
+                if (line_count < out_lines.len) {
+                    out_lines[line_count] = .{ .start = line_start, .end = lb.index };
+                    line_count += 1;
+                }
+                line_start = lb.index;
+                current_width = 0;
+            }
+        }
+        current_width += segment_width;
+        last_break = bp;
+    }
+
+    // Handle remaining text
+    if (line_start < text.len and line_count < out_lines.len) {
+        out_lines[line_count] = .{ .start = line_start, .end = text.len };
+        line_count += 1;
+    }
+
+    return line_count;
 }
 ```
 
@@ -245,10 +272,12 @@ fn wrapText(
 
 ```
 LineBreaker.BreakPoint:  8 bytes
+LineBreaker.Iterator:   16 bytes  (ptr + fn pointer)
 LineBreaker.VTable:      8 bytes  (1 function pointer)
 LineBreaker:            16 bytes
 
-Typical buffer (64 break points): 512 bytes
+Typical buffer (64 break points): 512 bytes  (if using collectBreaks)
+Iterator approach:                16 bytes   (no buffer needed)
 ```
 
 ---
@@ -366,32 +395,108 @@ Initial synthetic test (198 bytes, low break density):
 
 Long text has 450 break opportunities > 256 buffer → Design A truncates!
 
-**Updated Recommendation: Hybrid Interface**
+**Final Interface Decision: Single-Method + Utilities (Experiment 09)**
+
+After comprehensive testing with 13 realistic scenarios (UI labels, error messages, URLs, CJK text, long documents), we determined that `measureText()` dominates execution time, not the interface choice. This means the simplest interface wins.
 
 ```zig
+/// LineBreaker interface - implementers provide ONE method
 pub const LineBreaker = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
-        // Primary: iterator (always correct, no buffer overflow)
-        iterate: *const fn (
-            ptr: *anyopaque,
-            text: []const u8,
-        ) Iterator,
-
-        // Optional: fast path for small known texts
-        findBreakPoints: ?*const fn (
-            ptr: *anyopaque,
-            text: []const u8,
-            out_breaks: []BreakPoint,
-        ) ?usize,  // Returns null if would overflow
+        iterate: *const fn (ptr: *anyopaque, text: []const u8) Iterator,
     };
+
+    pub const BreakPoint = struct {
+        index: u32,       // Byte offset (break allowed AFTER this index)
+        kind: BreakKind,
+    };
+
+    pub const BreakKind = enum(u8) {
+        mandatory,   // \n - must break
+        word,        // space - can break
+        hyphen,      // soft hyphen
+        ideograph,   // CJK char boundary
+        emergency,   // anywhere (last resort)
+    };
+
+    pub const Iterator = struct {
+        text: []const u8,
+        pos: usize,
+        impl_ptr: *anyopaque,
+        nextFn: *const fn (*anyopaque, []const u8, *usize) ?BreakPoint,
+
+        pub fn next(self: *Iterator) ?BreakPoint {
+            return self.nextFn(self.impl_ptr, self.text, &self.pos);
+        }
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // CONVENIENCE METHODS (built on iterate, NOT in vtable)
+    // ─────────────────────────────────────────────────────────────
+
+    /// Get iterator (primary API)
+    pub fn iterate(self: LineBreaker, text: []const u8) Iterator {
+        return self.vtable.iterate(self.ptr, text);
+    }
+
+    /// Count break points without allocation
+    pub fn countBreaks(self: LineBreaker, text: []const u8) usize {
+        var iter = self.iterate(text);
+        var count: usize = 0;
+        while (iter.next() != null) count += 1;
+        return count;
+    }
+
+    /// Fill buffer with break points, return count (may be less than total)
+    pub fn collectBreaks(self: LineBreaker, text: []const u8, out: []BreakPoint) usize {
+        var iter = self.iterate(text);
+        var i: usize = 0;
+        while (i < out.len) : (i += 1) {
+            if (iter.next()) |bp| {
+                out[i] = bp;
+            } else break;
+        }
+        return i;
+    }
 };
 ```
 
-- **Desktop**: Use `iterate()` - handles any text length correctly
-- **Embedded**: Use `findBreakPoints()` - faster for small fixed buffers
+**Why This Design:**
+
+| Use Case | Solution | Rationale |
+|----------|----------|-----------|
+| **Embedded** | `collectBreaks()` into fixed buffer | Known max text length, fast path |
+| **Desktop** | `iterate()` directly | Lazy evaluation, no allocation |
+| **Mobile** | `iterate()` + countBreaks() | Preallocate exact size if needed |
+| **Gamedev** | `collectBreaks()` into pool | Fixed memory, frame allocator |
+| **C API** | Multiple options | Iterator, callback, or buffer all wrap `iterate()` |
+
+**Key Insights from Experiment 09:**
+
+1. **measureText() dominates** - 85%+ of line wrap time is in text measurement, not break finding
+2. **Interface overhead is noise** - Iterator vs callback vs buffer: <5% difference
+3. **Simplest wins** - One method in vtable = easiest to implement correctly
+4. **Convenience on top** - `countBreaks()`, `collectBreaks()` are utility functions, not interface
+
+**C API Flexibility:**
+
+All patterns are implementable on top of the single `iterate()` method:
+
+```c
+// Option A: Iterator (maps directly)
+ZigGuiBreakIterator iter = zig_gui_linebreaker_iterate(breaker, text, len);
+while (zig_gui_break_iterator_next(&iter, &break_point)) { ... }
+
+// Option B: Callback
+void my_callback(ZigGuiBreakPoint bp, void* user) { ... }
+zig_gui_linebreaker_for_each(breaker, text, len, my_callback, user_data);
+
+// Option C: Buffer (uses collectBreaks internally)
+size_t count = zig_gui_linebreaker_collect(breaker, text, len, out, out_len);
+```
 
 Key insight: Synthetic tests hid the buffer overflow bug. Always test with realistic data!
 
