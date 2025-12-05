@@ -319,7 +319,7 @@ Ships with `SimpleBreaker` (ASCII, ~50 lines) and `GreedyBreaker` (CJK, ~150 lin
 
 ## Open Questions (Remaining)
 
-### Implementation Gaps (Phase 1 Blockers)
+### Implementation Gaps (Need Validation)
 
 | # | Gap | Status | Notes |
 |---|-----|--------|-------|
@@ -329,37 +329,71 @@ Ships with `SimpleBreaker` (ASCII, ~50 lines) and `GreedyBreaker` (CJK, ~150 lin
 | 4 | C API | Not written | Write header, test from C |
 | 5 | Emoji ZWJ sequences | Needs Exp 14 | 5 codepoints → 1 glyph |
 
-### Deferred to Phase 3
+### Out of Scope (Explicit Exclusions)
 
-| Feature | Reason |
-|---------|--------|
-| SDF/MSDF | GPU-only, Phase 1-2 uses bitmap |
-| Complex shaping | Requires HarfBuzz |
-| Subpixel rendering | Platform-specific |
-| Variable fonts | Low priority |
-| Bidi (RTL) | Complex, needs HarfBuzz |
+These features are **not part of the design** - not "deferred", but excluded:
+
+| Feature | Why Excluded |
+|---------|--------------|
+| SDF/MSDF | Optimization for GPU; bitmap covers all targets adequately |
+| Subpixel rendering | Platform-specific (DirectWrite, CoreText); not portable |
+| Variable fonts | Specialized use case; standard fonts cover 99% of needs |
+
+### In Design, Implementation Pending
+
+These are **fully designed** in the interface but implementation is pending:
+
+| Feature | Interface Support | Implementation Status |
+|---------|-------------------|----------------------|
+| Bidi (RTL) | `hitTest()`, `getCaretInfo()` optional in vtable | Needs HarfBuzz integration |
+| Complex shaping | `shapeText()` optional in vtable | Needs HarfBuzz integration |
+| Color emoji | `AtlasFormat.rgba` in AtlasInfo | Needs COLR/CBDT parsing |
 
 ---
 
-## Implementation Plan
+## Complete System Architecture
 
-### Phase 1: Core Infrastructure
+The design covers the full system - there are no "phases", only implementation order:
 
-1. Define types in `src/text.zig`
-2. Implement `BitmapProvider` (comptime fonts, RLE decode)
-3. Integrate with GUI (`gui.text()` → measure → layout)
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         COMPLETE TEXT SYSTEM                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  PROVIDERS (implement TextProvider interface)                                │
+│  ────────────────────────────────────────────                                │
+│  BitmapProvider    - Embedded, comptime fonts, direct render                 │
+│  StbProvider       - Desktop, runtime fonts, atlas, kerning                  │
+│  ShapingProvider   - Full i18n, wraps HarfBuzz, bidi support                 │
+│                                                                              │
+│  FEATURES (all designed, implementation varies by provider)                  │
+│  ──────────────────────────────────────────────────────────                  │
+│  • measureText()        - All providers (required)                           │
+│  • getCharPositions()   - All providers (required, returns graphemes)        │
+│  • getGlyphQuads()      - Atlas providers (with kerning)                     │
+│  • renderDirect()       - Embedded provider                                  │
+│  • hitTest()            - Shaping provider (for bidi)                        │
+│  • getCaretInfo()       - Shaping provider (for split caret)                 │
+│  • shapeText()          - Shaping provider (for Arabic, Devanagari)          │
+│  • loadFont()           - Runtime providers                                  │
+│                                                                              │
+│  LINE BREAKING (separate interface, BYOL)                                    │
+│  ─────────────────────────────────────────                                   │
+│  SimpleBreaker     - ASCII spaces                                            │
+│  GreedyBreaker     - CJK support                                             │
+│  User-provided     - UAX #14, ICU, platform                                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-### Phase 2: Desktop Provider
+### Implementation Order
 
-4. Implement `StbProvider` (stb_truetype, glyph cache, atlas)
-5. Add cursor support (`getCharPositions`)
-6. LTR only
-
-### Phase 3: Advanced Features
-
-7. SDF/MSDF for GPU
-8. Complex script shaping (HarfBuzz)
-9. Bidi support
+1. Define types in `src/text.zig` (full interface)
+2. Implement `BitmapProvider` (embedded target)
+3. Implement `StbProvider` (desktop target, multi-font, kerning, graphemes)
+4. Integrate with GUI and draw system
+5. Write C API header and test
+6. Implement `ShapingProvider` when HarfBuzz integration needed
 
 ---
 
@@ -380,7 +414,7 @@ Ships with `SimpleBreaker` (ASCII, ~50 lines) and `GreedyBreaker` (CJK, ~150 lin
 | 11 | Bidi validation | Binary search FAILS, need hitTest |
 | 12 | Atlas management | Multi-page required for CJK |
 | 13 | Font fallback | User chain + locale for Han unification |
-| **14** | **TODO** | Multi-font + kerning + emoji ZWJ |
+| **14** | **TODO** | Multi-font + kerning + graphemes + full pipeline |
 
 Run experiments:
 ```bash
@@ -390,16 +424,20 @@ zig run 01_bitmap_baseline.zig
 
 ---
 
-## Bidi Limitation
+## Bidi Support
 
-**Phase 1-2 supports LTR only.** Bidi deferred to Phase 3.
+**Interface fully supports bidi.** Implementation requires HarfBuzz.
 
+The interface includes optional `hitTest()` and `getCaretInfo()` specifically because experiment 11 proved that binary search fails for RTL text:
+
+```
 For mixed RTL/LTR (e.g., "Hello שלום World"):
-- Binary search on positions FAILS
+- Binary search on positions FAILS → need hitTest()
 - Selection produces multiple rectangles
-- Split caret needed at RTL/LTR boundary
+- Split caret needed at boundary → need getCaretInfo()
+```
 
-Interface is designed for future bidi (`hitTest`, `getCaretInfo` optional).
+When `ShapingProvider` is implemented (wrapping HarfBuzz), these methods will be non-null and bidi will work. The interface doesn't change.
 
 ---
 

@@ -124,6 +124,31 @@ fn myApp(gui: *GUI, state: *AppState) !void {
 - Don't re-export unused types
 - Don't add `// removed` comments
 
+### 6. Design the Complete Solution
+
+**Never design incomplete solutions or defer hard problems to "later phases".**
+
+When designing interfaces or features:
+- Design for the FULL requirements from the start (embedded + desktop + i18n)
+- Include support for hard cases in the interface (bidi, emoji, CJK) even if implementation comes later
+- Don't create interfaces that will need breaking changes when "Phase 2" arrives
+- If a feature is out of scope, exclude it entirely - don't half-design it
+
+```
+// WRONG: "Phase 1 is LTR only, we'll add bidi later"
+// This leads to interfaces that can't support bidi without breaking changes
+
+// CORRECT: Design interface that supports bidi from day 1
+// Implementation can be LTR-only initially, but interface is complete
+pub const VTable = struct {
+    getCharPositions: *const fn (...) usize,           // Works for all text
+    hitTest: ?*const fn (...) HitTestResult,           // Optional, needed for bidi
+    getCaretInfo: ?*const fn (...) CaretInfo,          // Optional, needed for bidi
+};
+```
+
+The goal is **complete design, incremental implementation** - not phased design that accumulates technical debt.
+
 ## Validation Standards
 
 ### Honest Benchmarking
