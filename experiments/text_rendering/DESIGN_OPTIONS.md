@@ -555,14 +555,143 @@ size_t count = zig_gui_linebreaker_collect(breaker, text, len, out, out_len);
 
 Key insight: Synthetic tests hid the buffer overflow bug. Always test with realistic data!
 
-### 2. Font Fallback
+### 2. ~~Font Fallback~~ ✓ RESOLVED (Experiment 13)
 
-**Options**:
-- A) User provides fallback chain
-- B) Built-in Unicode coverage detection
-- C) Platform font discovery
+**Decision**: User provides fallback chain + locale tag for Han unification
 
-**Recommendation**: A (user responsibility). Built-in fallback adds complexity for marginal benefit.
+**Background**: When primary font lacks a glyph, we need to find an alternative. This is especially critical for CJK where the same codepoint (Han unification) renders differently per locale.
+
+**Options Evaluated**:
+
+| Option | Description | Verdict |
+|--------|-------------|---------|
+| A) User Chain | User provides ordered font list | ✓ Recommended |
+| B) Coverage Scan | Scan fonts for Unicode ranges | ✗ Expensive startup |
+| C) Platform Query | Ask OS (DirectWrite, CoreText) | ✗ Too complex |
+| D) BYOFF | Pluggable fallback interface | ✗ Overkill |
+
+**Final Decision: User Chain + Locale Tag**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      FONT FALLBACK DECISION                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. USER PROVIDES FALLBACK CHAIN                                            │
+│     ────────────────────────────                                            │
+│     • User lists fonts in order: [primary, symbol, emoji, cjk_jp, ...]      │
+│     • Provider searches linearly until glyph found                          │
+│     • Predictable: Same fonts = same result everywhere                      │
+│     • Embedded-friendly: No OS dependency                                   │
+│                                                                              │
+│  2. LOCALE TAG FOR HAN UNIFICATION                                          │
+│     ──────────────────────────────                                          │
+│     • Same codepoint U+76F4 (直) renders differently per locale             │
+│     • Config: .fallback_locale = "ja" → prefer Japanese font variant        │
+│     • For CJK range: locale-matching font searched first                    │
+│                                                                              │
+│  3. NO BYOFF (Bring Your Own Font Fallback)                                 │
+│     ────────────────────────────────────                                    │
+│     • Same reasoning as BYOFM (atlas management)                            │
+│     • Config is enough, interface would add complexity                      │
+│     • 95% of users just need "list fonts in order"                          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Updated TextProviderConfig**:
+
+```zig
+pub const TextProviderConfig = struct {
+    // Primary font (required)
+    primary_font: FontHandle,
+
+    // Fallback chain (optional, searched in order)
+    fallback_fonts: []const FontHandle = &.{},
+
+    // For Han unification - which CJK variant to prefer
+    // null = use first matching CJK font
+    // "ja" = prefer Japanese variant
+    // "zh-Hans" = prefer Simplified Chinese
+    // "zh-Hant" = prefer Traditional Chinese
+    // "ko" = prefer Korean
+    fallback_locale: ?[]const u8 = null,
+
+    // What to do when no font has the glyph
+    missing_glyph: MissingGlyphBehavior = .render_notdef,
+
+    // Atlas config (from experiment 12)
+    atlas_strategy: AtlasStrategy = .shelf_lru,
+    atlas_size: u16 = 1024,
+    max_atlas_pages: u8 = 4,
+};
+
+pub const MissingGlyphBehavior = enum {
+    render_notdef,    // Show □ or similar box
+    skip,             // Don't render anything
+    replacement_char, // Show U+FFFD �
+};
+```
+
+**Recommendations by Target**:
+
+| Target | Fallback Chain | Locale |
+|--------|----------------|--------|
+| Embedded (32KB) | Single font, no fallback | N/A |
+| Desktop Latin | Roboto + Symbols + Emoji | null |
+| Desktop CJK | Roboto + Noto CJK + Emoji | "ja"/"zh-Hans"/etc. |
+| Games | Pre-load all needed fonts | Depends on audience |
+| Full i18n | 5-10 font chain | App-specific |
+
+**Experiment 13 Key Results**:
+
+| Metric | Linear | Locale-Aware |
+|--------|--------|--------------|
+| Total lookups | 1115 | 1185 |
+| Avg lookups/codepoint | 2.33 | 2.48 |
+| Han unification wins | 0 | 4 scenarios |
+
+**Han Unification Example**:
+
+```
+Text: "直接" (U+76F4 U+63A5)
+Locale: "ja" (Japanese)
+
+Linear search: Finds Noto Sans SC (Chinese) first → Wrong strokes!
+Locale-aware:  Prefers Noto Sans JP (Japanese) → Correct strokes!
+```
+
+**2025 State-of-the-Art Validation**:
+
+| Source | Approach | Alignment |
+|--------|----------|-----------|
+| Chrome | Hard-coded script-to-font map | Similar to user chain |
+| Firefox | Dynamic search up to 32 fonts | Similar to user chain |
+| DirectWrite | IDWriteFontFallback API | We skip this |
+| CoreText | CTFontCreateForString | We skip this |
+| cosmic-text | Chrome/Firefox static lists | ✓ Same approach |
+| Dear ImGui | MergeMode font stacking | ✓ Same approach |
+| Unity | Fallback font asset chain | ✓ Same approach |
+
+**Why NOT Platform Query**:
+
+1. **Complexity**: 3 different APIs (Windows, macOS, Linux)
+2. **Embedded**: No OS = no platform query
+3. **Predictability**: Different per machine
+4. **Not needed**: User chain covers 95% of use cases
+
+**Optional Future Enhancement**:
+
+```zig
+// For users who WANT platform integration (desktop only)
+pub fn querySystemFallback(codepoint: u32, locale: ?[]const u8) ?FontHandle;
+```
+
+**Sources**:
+- Experiment 13: `experiments/text_rendering/13_font_fallback.zig`
+- Raph Levien: https://raphlinus.github.io/rust/skribo/text/2019/04/04/font-fallback.html
+- Chrome font fallback: https://gist.github.com/CrendKing/c162f5a16507d2163d58ee0cf542e695
+- Dear ImGui FONTS.md: https://github.com/ocornut/imgui/blob/master/docs/FONTS.md
 
 ### 3. ~~Atlas Management When Full~~ ✓ RESOLVED (Experiment 12)
 

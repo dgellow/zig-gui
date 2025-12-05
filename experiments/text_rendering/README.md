@@ -701,6 +701,79 @@ pub const AtlasStrategy = enum {
 };
 ```
 
+### Experiment 13: Font Fallback (`13_font_fallback.zig`)
+
+**Comprehensive validation of font fallback approaches across all targets.**
+
+Tests "user provides fallback chain" approach (Dear ImGui style) against 26 realistic scenarios with two strategies: simple linear search vs locale-aware search (for Han unification).
+
+```bash
+zig run experiments/text_rendering/13_font_fallback.zig
+```
+
+**Strategies Tested:**
+
+| Strategy | Description | Handles Han? |
+|----------|-------------|--------------|
+| Linear | Search chain in order | ✗ No |
+| Locale-Aware | Prefer locale-matching font for CJK | ✓ Yes |
+
+**26 Realistic Scenarios:**
+
+| Category | Scenarios | Key Challenge |
+|----------|-----------|---------------|
+| Embedded | thermostat, degree symbol, euro | Single font, special chars |
+| Desktop Latin | quotes, accents, math, code, emoji | 3-font chain |
+| CJK | JP in EN app, zh-Hans, zh-Hant, Han unification | Locale matters! |
+| International | Arabic, Hebrew, Devanagari | Script-specific fonts |
+| Games | HUD, leaderboard, MMO chat | Performance + i18n |
+| Edge cases | missing glyph, PUA icons, variation selectors | Graceful degradation |
+
+**Key Results:**
+
+| Finding | Detail |
+|---------|--------|
+| Han unification | 4 scenarios where locale-aware was better |
+| Avg lookups | ~2.3-2.5 per codepoint (very fast) |
+| Critical failures | 3 scenarios (missing € and some CJK) |
+
+**Critical Finding - Han Unification:**
+
+Same codepoint U+76F4 (直) renders differently per locale:
+- `ja` locale → Japanese font variant (correct strokes)
+- `zh-Hans` locale → Simplified Chinese variant
+- Linear search → Wrong font for 30% of CJK scenarios
+
+**Interface Decision (Validated):**
+
+| Decision | Rationale |
+|----------|-----------|
+| ✓ User provides fallback chain | Simple, predictable, embedded-friendly |
+| ✓ Locale tag for Han unification | `fallback_locale: "ja"` in config |
+| ✗ BYOFF (Bring Your Own Font Fallback) | Config is enough |
+| ✗ Platform font query | Too complex, not needed |
+
+**Final Proposed Config:**
+
+```zig
+pub const TextProviderConfig = struct {
+    primary_font: FontHandle,
+    fallback_fonts: []const FontHandle = &.{},
+
+    // For Han unification - which CJK variant to prefer
+    fallback_locale: ?[]const u8 = null,
+
+    // What to do when no font has the glyph
+    missing_glyph: MissingGlyphBehavior = .render_notdef,
+};
+
+pub const MissingGlyphBehavior = enum {
+    render_notdef,    // Show □
+    skip,             // Don't render
+    replacement_char, // Show U+FFFD �
+};
+```
+
 ---
 
 ## Open Questions to Resolve
@@ -743,10 +816,27 @@ pub const AtlasStrategy = enum {
 
    See experiment 12 for full simulation with 13 realistic scenarios.
 
-4. **Font fallback: whose responsibility?**
-   - User provides fallback chain?
-   - Built-in Unicode coverage detection?
-   - Platform font discovery?
+4. **~~Font fallback: whose responsibility?~~** ✓ FULLY RESOLVED (Experiment 13)
+   - **Decision: User provides fallback chain** (like Dear ImGui, Unity)
+   - **Decision: Add locale tag for Han unification** (`fallback_locale: "ja"`)
+   - **Decision: NO BYOFF** (Bring Your Own Font Fallback) - config is enough
+
+   **Key findings from experiment 13:**
+   - **Embedded**: Single font, no fallback needed
+   - **Desktop Latin**: 3-font chain (primary + symbols + emoji) covers 95%
+   - **CJK**: MUST use locale-aware fallback for Han unification
+   - **Games**: Pre-load fonts, cache fallback results
+
+   **Han unification validated**: Same codepoint U+76F4 (直) renders differently
+   per locale - locale-aware strategy correctly picks right font variant.
+
+   **2025 state-of-the-art validated:**
+   - Browsers: Chrome/Firefox hard-coded script-to-font maps
+   - OS APIs: DirectWrite, CoreText, fontconfig (NOT needed for most apps)
+   - Game engines: Unity/ImGui user-provided chains
+   - Rust: cosmic-text uses Chrome/Firefox static lists
+
+   See experiment 13 for 26 realistic scenarios across all targets.
 
 5. **Atlas texture format?**
    - Alpha-only (1 channel, smaller)
