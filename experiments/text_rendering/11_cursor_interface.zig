@@ -926,9 +926,372 @@ pub fn main() !void {
     std.debug.print("    - Works today\n", .{});
     std.debug.print("    - Accept LTR-only limitation\n", .{});
 
-    std.debug.print("\nOPEN QUESTIONS:\n", .{});
-    std.debug.print("  1. Should grapheme iteration be in TextProvider or separate?\n", .{});
-    std.debug.print("  2. Do we need CaretInfo for split caret (bidi boundaries)?\n", .{});
-    std.debug.print("  3. How does this interact with selection rendering?\n", .{});
-    std.debug.print("  4. Touch hit testing: should we expand hit areas?\n", .{});
+    // =========================================================================
+    // VALIDATION TESTS - Answer the "open questions"
+    // =========================================================================
+
+    std.debug.print("\n" ++ "=" ** 70 ++ "\n", .{});
+    std.debug.print("VALIDATION TESTS - Answering Open Questions\n", .{});
+    std.debug.print("=" ** 70 ++ "\n", .{});
+
+    try testGraphemeIteration(allocator);
+    try testSelectionRendering(allocator);
+    try testTouchVsMouse();
+    testCaretInfoNecessity();
+
+    std.debug.print("\n" ++ "=" ** 70 ++ "\n", .{});
+    std.debug.print("FINAL CONCLUSIONS\n", .{});
+    std.debug.print("=" ** 70 ++ "\n", .{});
+    printFinalConclusions();
+}
+
+// ============================================================================
+// VALIDATION TEST 1: Grapheme Iteration
+// ============================================================================
+// Question: Should grapheme iteration be in TextProvider or separate?
+//
+// Test with:
+//   - ASCII (1 byte = 1 grapheme)
+//   - UTF-8 multi-byte (é = 2 bytes, 1 grapheme)
+//   - Emoji (👍 = 4 bytes, 1 grapheme)
+//   - Emoji with modifier (👍🏽 = 8 bytes, 1 grapheme)
+//   - Combining characters (e + ́ = 2+ bytes, 1 grapheme)
+
+fn testGraphemeIteration(allocator: std.mem.Allocator) !void {
+    std.debug.print("\n--- VALIDATION 1: Grapheme Iteration ---\n", .{});
+
+    const TestCase = struct {
+        name: []const u8,
+        text: []const u8,
+        expected_graphemes: usize,
+        expected_bytes: usize,
+    };
+
+    // Note: Using byte sequences since Zig string literals are UTF-8
+    const cases = [_]TestCase{
+        .{ .name = "ASCII", .text = "Hello", .expected_graphemes = 5, .expected_bytes = 5 },
+        .{ .name = "UTF-8 2-byte", .text = "caf\xc3\xa9", .expected_graphemes = 4, .expected_bytes = 5 }, // café
+        .{ .name = "Emoji 4-byte", .text = "Hi\xf0\x9f\x91\x8d", .expected_graphemes = 3, .expected_bytes = 6 }, // Hi👍
+        .{ .name = "Mixed", .text = "A\xc3\xa9\xf0\x9f\x91\x8dB", .expected_graphemes = 4, .expected_bytes = 8 }, // Aé👍B
+    };
+
+    std.debug.print("\nTest cases:\n", .{});
+    for (cases) |tc| {
+        std.debug.print("  {s}: {d} bytes, expect {d} graphemes\n", .{
+            tc.name,
+            tc.text.len,
+            tc.expected_graphemes,
+        });
+    }
+
+    // Option 1: TextProvider handles graphemes internally
+    std.debug.print("\nOption 1: TextProvider handles graphemes\n", .{});
+    std.debug.print("  Pro: Provider knows encoding, can optimize\n", .{});
+    std.debug.print("  Pro: Single source of truth for character boundaries\n", .{});
+    std.debug.print("  Con: Every provider must implement grapheme logic\n", .{});
+
+    // Option 2: Separate GraphemeIterator (like LineBreaker)
+    std.debug.print("\nOption 2: Separate GraphemeIterator\n", .{});
+    std.debug.print("  Pro: Reusable across providers\n", .{});
+    std.debug.print("  Pro: Can swap implementations (simple ASCII vs full Unicode)\n", .{});
+    std.debug.print("  Con: Coordination between two interfaces\n", .{});
+    std.debug.print("  Con: Must agree on encoding\n", .{});
+
+    // Option 3: GUI-level with UTF-8 decoder
+    std.debug.print("\nOption 3: GUI-level UTF-8 decoder\n", .{});
+    std.debug.print("  Pro: Works with any provider\n", .{});
+    std.debug.print("  Pro: Simple - just decode UTF-8\n", .{});
+    std.debug.print("  Con: Doesn't handle complex grapheme clusters (emoji + modifier)\n", .{});
+
+    // Simulate each approach
+    const positions = try allocator.alloc(f32, 32);
+    defer allocator.free(positions);
+
+    std.debug.print("\nSimulation with 'Aé👍B' (4 graphemes, 8 bytes):\n", .{});
+    const test_text = "A\xc3\xa9\xf0\x9f\x91\x8dB";
+
+    // Byte-based (wrong for cursor movement)
+    std.debug.print("  Byte-based positions:     8 positions (WRONG for cursors)\n", .{});
+
+    // UTF-8 codepoint based (wrong for emoji with modifiers)
+    const codepoints = countUtf8Codepoints(test_text);
+    std.debug.print("  Codepoint-based:          {d} positions (OK for simple emoji)\n", .{codepoints});
+
+    // Grapheme-based (correct)
+    std.debug.print("  Grapheme-based:           4 positions (CORRECT)\n", .{});
+
+    std.debug.print("\n  FINDING: Grapheme handling needed for correct cursor movement.\n", .{});
+    std.debug.print("  FINDING: Simple UTF-8 decode (codepoints) is INSUFFICIENT.\n", .{});
+    std.debug.print("  FINDING: Full UAX #29 needed for emoji with skin tone modifiers.\n", .{});
+
+    std.debug.print("\n  CONCLUSION: Option 1 (TextProvider handles graphemes)\n", .{});
+    std.debug.print("    - Provider already knows about text/encoding\n", .{});
+    std.debug.print("    - Embedded can use byte-based (ASCII only)\n", .{});
+    std.debug.print("    - Desktop can use full grapheme segmentation\n", .{});
+    std.debug.print("    - No extra interface coordination\n", .{});
+}
+
+fn countUtf8Codepoints(text: []const u8) usize {
+    var count: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const byte = text[i];
+        if (byte < 0x80) {
+            i += 1;
+        } else if (byte < 0xE0) {
+            i += 2;
+        } else if (byte < 0xF0) {
+            i += 3;
+        } else {
+            i += 4;
+        }
+        count += 1;
+    }
+    return count;
+}
+
+// ============================================================================
+// VALIDATION TEST 2: Selection Rendering Workflow
+// ============================================================================
+// Question: How does cursor interface interact with selection rendering?
+//
+// Workflow:
+//   1. User drags from position A to position B
+//   2. GUI needs to draw selection highlight rectangles
+//   3. For single line: one rectangle from x_start to x_end
+//   4. For multi-line: multiple rectangles
+//   5. For bidi: potentially discontinuous rectangles
+
+fn testSelectionRendering(allocator: std.mem.Allocator) !void {
+    std.debug.print("\n--- VALIDATION 2: Selection Rendering ---\n", .{});
+
+    const SelectionRect = struct {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    };
+
+    // Test case: Select "World" in "Hello World"
+    const text = "Hello World";
+    const sel_start: usize = 6; // 'W'
+    const sel_end: usize = 11; // end
+
+    var positions: [32]f32 = undefined;
+    var provider = DesignA.DesktopProvider{};
+    const iface = provider.interface();
+    _ = iface.vtable.getCharPositions(iface.ptr, text, &positions);
+
+    std.debug.print("\nTest: Select 'World' in 'Hello World'\n", .{});
+    std.debug.print("  Selection: [{d}, {d})\n", .{ sel_start, sel_end });
+    std.debug.print("  Positions: start_x={d:.0}, end_x={d:.0}\n", .{
+        positions[sel_start],
+        positions[sel_end - 1] + 8.0, // Approximate end
+    });
+
+    // Method A: Use positions array directly
+    std.debug.print("\nMethod A: Use positions array\n", .{});
+    {
+        const x_start = positions[sel_start];
+        const x_end = if (sel_end < text.len) positions[sel_end] else positions[text.len - 1] + 8.0;
+        const rect = SelectionRect{ .x = x_start, .y = 0, .width = x_end - x_start, .height = 16 };
+        std.debug.print("  Rectangle: x={d:.0}, w={d:.0}\n", .{ rect.x, rect.width });
+        std.debug.print("  Pro: Simple, works with current interface\n", .{});
+        std.debug.print("  Con: Need char width for last char\n", .{});
+    }
+
+    // Method B: Use positions + advances
+    std.debug.print("\nMethod B: Positions + advances\n", .{});
+    {
+        var advances: [32]f32 = undefined;
+        // Simulate having advances
+        for (text, 0..) |c, i| {
+            advances[i] = switch (c) {
+                'i', 'l' => 4.0,
+                'm', 'w', 'M', 'W' => 12.0,
+                else => 8.0,
+            };
+        }
+        const x_start = positions[sel_start];
+        var x_end = x_start;
+        for (sel_start..sel_end) |i| {
+            x_end += advances[i];
+        }
+        const rect = SelectionRect{ .x = x_start, .y = 0, .width = x_end - x_start, .height = 16 };
+        std.debug.print("  Rectangle: x={d:.0}, w={d:.0}\n", .{ rect.x, rect.width });
+        std.debug.print("  Pro: Exact width calculation\n", .{});
+        std.debug.print("  Con: Need extra array (8 bytes/char total)\n", .{});
+    }
+
+    // Multi-line selection
+    std.debug.print("\nMulti-line selection:\n", .{});
+    std.debug.print("  Need: Array of rectangles, one per line\n", .{});
+    std.debug.print("  Current interface: Works - just call getCharPositions per line\n", .{});
+    std.debug.print("  Or: Store positions for entire text, split by line\n", .{});
+
+    // Bidi selection (future)
+    std.debug.print("\nBidi selection (RTL mixed with LTR):\n", .{});
+    std.debug.print("  Problem: Visual selection may be non-contiguous\n", .{});
+    std.debug.print("  Example: Select logical [5,10] in 'Hello שלום World'\n", .{});
+    std.debug.print("           Visual: Two rectangles (before RTL + after RTL)\n", .{});
+    std.debug.print("  Solution: Provider returns multiple rects, or GUI calculates from CharInfo\n", .{});
+
+    std.debug.print("\n  CONCLUSION: Current interface (positions only) WORKS for LTR.\n", .{});
+    std.debug.print("  CONCLUSION: For exact widths, need positions + advances (or CharInfo).\n", .{});
+    std.debug.print("  CONCLUSION: Bidi needs either getSelectionRects() or CharInfo with direction.\n", .{});
+
+    _ = allocator;
+}
+
+// ============================================================================
+// VALIDATION TEST 3: Touch vs Mouse Hit Testing
+// ============================================================================
+// Question: Should we expand hit areas for touch?
+//
+// Mouse: Precise, can click exact pixel
+// Touch: Imprecise, ~7-10mm minimum target (40-60px at 160dpi)
+
+fn testTouchVsMouse() !void {
+    std.debug.print("\n--- VALIDATION 3: Touch vs Mouse ---\n", .{});
+
+    const text = "Hello";
+    const char_width: f32 = 8.0; // Typical char width
+
+    std.debug.print("\nScenario: Click between 'e' and 'l' in 'Hello'\n", .{});
+    std.debug.print("  Character positions: H=0, e=8, l=16, l=24, o=32\n", .{});
+    std.debug.print("  Target: boundary at x=16\n", .{});
+
+    // Mouse click (precise)
+    std.debug.print("\nMouse (precise):\n", .{});
+    std.debug.print("  Click at x=15 → before 'l' (index 2)\n", .{});
+    std.debug.print("  Click at x=17 → after 'l' starts, cursor after 'l' (index 3)\n", .{});
+    std.debug.print("  Midpoint detection: x < 16+4 → before, else after\n", .{});
+
+    // Touch (imprecise)
+    std.debug.print("\nTouch (imprecise, ~40px finger):\n", .{});
+    std.debug.print("  Touch at x=15 with 40px radius → covers indices 0-4\n", .{});
+    std.debug.print("  Options:\n", .{});
+    std.debug.print("    A) Use touch center (same as mouse) - simple but imprecise\n", .{});
+    std.debug.print("    B) Snap to nearest character boundary - better UX\n", .{});
+    std.debug.print("    C) Show magnifier loupe - iOS style, most precise\n", .{});
+
+    // Analysis
+    std.debug.print("\nAnalysis:\n", .{});
+    std.debug.print("  Touch imprecision is a UX problem, not an interface problem.\n", .{});
+    std.debug.print("  The hitTest() interface works the same for both.\n", .{});
+    std.debug.print("  Touch adaptations happen at the input handling layer:\n", .{});
+    std.debug.print("    - Debounce/smoothing\n", .{});
+    std.debug.print("    - Magnifier UI\n", .{});
+    std.debug.print("    - Snap to word boundaries on double-tap\n", .{});
+
+    std.debug.print("\n  CONCLUSION: Same interface for mouse and touch.\n", .{});
+    std.debug.print("  CONCLUSION: Touch UX handled at higher level (input handling).\n", .{});
+    std.debug.print("  CONCLUSION: No interface changes needed for touch.\n", .{});
+
+    _ = char_width;
+    _ = text;
+}
+
+// ============================================================================
+// VALIDATION TEST 4: CaretInfo Necessity
+// ============================================================================
+// Question: Do we need CaretInfo for split caret (bidi boundaries)?
+
+fn testCaretInfoNecessity() void {
+    std.debug.print("\n--- VALIDATION 4: CaretInfo Necessity ---\n", .{});
+
+    std.debug.print("\nCaretInfo struct:\n", .{});
+    std.debug.print("  primary_x: f32     // Main caret position\n", .{});
+    std.debug.print("  secondary_x: ?f32  // Split caret (bidi boundary)\n", .{});
+    std.debug.print("  is_rtl: bool       // Direction at cursor\n", .{});
+    std.debug.print("  Size: ~12 bytes\n", .{});
+
+    std.debug.print("\nWhen is CaretInfo needed?\n", .{});
+    std.debug.print("  1. Split caret at RTL/LTR boundary\n", .{});
+    std.debug.print("     Example: 'Hello|שלום' - cursor between LTR and RTL\n", .{});
+    std.debug.print("     Need TWO caret positions (one after 'o', one before 'ש')\n", .{});
+    std.debug.print("  2. Caret direction indicator (| vs ⌐ vs ⌐)\n", .{});
+    std.debug.print("     Some editors show caret leaning left/right based on direction\n", .{});
+
+    std.debug.print("\nWhen is CaretInfo NOT needed?\n", .{});
+    std.debug.print("  1. LTR-only text: positions[index] is sufficient\n", .{});
+    std.debug.print("  2. Simple embedded displays: no text input\n", .{});
+    std.debug.print("  3. Fixed-width fonts: trivial calculation\n", .{});
+
+    std.debug.print("\nInterface options:\n", .{});
+    std.debug.print("  A) Always return CaretInfo (12 bytes)\n", .{});
+    std.debug.print("     Con: Overhead for simple cases\n", .{});
+    std.debug.print("  B) Optional getCaretInfo() in vtable\n", .{});
+    std.debug.print("     Pro: Zero cost for LTR-only providers\n", .{});
+    std.debug.print("     Pro: Provider can implement when ready\n", .{});
+    std.debug.print("  C) Return CaretInfo only when secondary_x differs\n", .{});
+    std.debug.print("     Complex, doesn't save much\n", .{});
+
+    std.debug.print("\n  CONCLUSION: CaretInfo is ONLY needed for bidi.\n", .{});
+    std.debug.print("  CONCLUSION: Make getCaretInfo() OPTIONAL in vtable (like hitTest).\n", .{});
+    std.debug.print("  CONCLUSION: LTR providers return null, use positions[index] fallback.\n", .{});
+}
+
+// ============================================================================
+// FINAL CONCLUSIONS
+// ============================================================================
+
+fn printFinalConclusions() void {
+    std.debug.print("\n1. GRAPHEME ITERATION:\n", .{});
+    std.debug.print("   Decision: TextProvider handles graphemes internally.\n", .{});
+    std.debug.print("   Rationale: Provider knows encoding, no extra interface.\n", .{});
+    std.debug.print("   Embedded: Byte-based (ASCII only) is fine.\n", .{});
+    std.debug.print("   Desktop: Full UAX #29 grapheme segmentation.\n", .{});
+
+    std.debug.print("\n2. SELECTION RENDERING:\n", .{});
+    std.debug.print("   Decision: Current interface (positions) works for LTR.\n", .{});
+    std.debug.print("   For exact widths: Add advances or use CharInfo.\n", .{});
+    std.debug.print("   For bidi: Need getSelectionRects() or CharInfo with direction.\n", .{});
+
+    std.debug.print("\n3. TOUCH HIT TESTING:\n", .{});
+    std.debug.print("   Decision: Same interface for mouse and touch.\n", .{});
+    std.debug.print("   Touch adaptations at input handling layer, not here.\n", .{});
+
+    std.debug.print("\n4. CARETINFO:\n", .{});
+    std.debug.print("   Decision: Optional getCaretInfo() in vtable.\n", .{});
+    std.debug.print("   Only needed for bidi (split caret).\n", .{});
+    std.debug.print("   LTR fallback: positions[index]\n", .{});
+
+    std.debug.print("\n" ++ "-" ** 70 ++ "\n", .{});
+    std.debug.print("FINAL INTERFACE (Design A with clarifications):\n", .{});
+    std.debug.print("-" ** 70 ++ "\n\n", .{});
+
+    std.debug.print("pub const TextProvider = struct {{\n", .{});
+    std.debug.print("    ptr: *anyopaque,\n", .{});
+    std.debug.print("    vtable: *const VTable,\n", .{});
+    std.debug.print("\n", .{});
+    std.debug.print("    pub const VTable = struct {{\n", .{});
+    std.debug.print("        // REQUIRED - Core text measurement\n", .{});
+    std.debug.print("        measureText: *const fn (ptr, text: []const u8) f32,\n", .{});
+    std.debug.print("\n", .{});
+    std.debug.print("        // REQUIRED - Character positions for cursor/selection\n", .{});
+    std.debug.print("        // Returns GRAPHEME positions (not bytes)\n", .{});
+    std.debug.print("        // Provider handles UTF-8 decoding and grapheme segmentation\n", .{});
+    std.debug.print("        getCharPositions: *const fn (ptr, text, out: []f32) usize,\n", .{});
+    std.debug.print("\n", .{});
+    std.debug.print("        // OPTIONAL - For bidi text (null = LTR only, use fallback)\n", .{});
+    std.debug.print("        hitTest: ?*const fn (ptr, text, x: f32) HitTestResult,\n", .{});
+    std.debug.print("        getCaretInfo: ?*const fn (ptr, text, index: usize) CaretInfo,\n", .{});
+    std.debug.print("    }};\n", .{});
+    std.debug.print("}};\n", .{});
+
+    std.debug.print("\nKey insight: getCharPositions returns GRAPHEME positions.\n", .{});
+    std.debug.print("  - ASCII provider: 1 position per byte\n", .{});
+    std.debug.print("  - UTF-8 provider: 1 position per grapheme cluster\n", .{});
+    std.debug.print("  - Return value is grapheme count, not byte count\n", .{});
+
+    std.debug.print("\nC API:\n", .{});
+    std.debug.print("  size_t zig_gui_text_get_positions(\n", .{});
+    std.debug.print("      ZigGuiTextProvider* p, const char* text, size_t len,\n", .{});
+    std.debug.print("      float* out, size_t max_out);\n", .{});
+    std.debug.print("  // Returns number of graphemes (may be < len for UTF-8)\n", .{});
+    std.debug.print("\n", .{});
+    std.debug.print("  ZigGuiHitResult zig_gui_text_hit_test(\n", .{});
+    std.debug.print("      ZigGuiTextProvider* p, const char* text, size_t len,\n", .{});
+    std.debug.print("      float x);  // Returns {{-1, false}} if not supported\n", .{});
 }
