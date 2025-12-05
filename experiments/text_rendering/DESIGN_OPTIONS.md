@@ -143,6 +143,116 @@ pub const TextProvider = struct {
 
 ---
 
+## Line Breaking: BYOL (Bring Your Own Line Breaker)
+
+Line breaking follows the same "Bring Your Own" philosophy as rendering (BYOR) and text (BYOT).
+
+### Why BYOL?
+
+Line breaking complexity varies dramatically:
+
+| Use Case | Complexity | Solution |
+|----------|------------|----------|
+| Embedded ASCII | Trivial | Split on spaces |
+| Desktop Latin | Simple | Word boundaries + punctuation |
+| Desktop CJK | Medium | Any ideograph boundary |
+| Desktop i18n | Complex | UAX #14 (40+ page spec) |
+| Platform-native | External | ICU, macOS CTLine, Win32 |
+
+Building all this into zig-gui would:
+- Bloat embedded builds
+- Never satisfy i18n requirements fully
+- Duplicate platform APIs
+
+### LineBreaker Interface
+
+```zig
+pub const LineBreaker = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// Find valid break positions in text.
+        /// Caller provides output buffer (zero allocation).
+        findBreakPoints: *const fn (
+            ptr: *anyopaque,
+            text: []const u8,
+            out_breaks: []BreakPoint,
+        ) usize,
+    };
+
+    pub const BreakPoint = struct {
+        index: u32,       // Byte offset (break allowed AFTER this index)
+        kind: BreakKind,
+    };
+
+    pub const BreakKind = enum(u8) {
+        mandatory,   // \n, paragraph separator
+        word,        // Space, punctuation
+        hyphen,      // Soft hyphen
+        ideograph,   // CJK character boundary
+        emergency,   // Anywhere (last resort)
+    };
+};
+```
+
+### Tiered Implementations
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     LineBreaker Interface                        │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+       ┌───────────────────────┼───────────────────────┐
+       │                       │                       │
+       ▼                       ▼                       ▼
+┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
+│ SimpleBreaker   │   │ GreedyBreaker   │   │ User-Provided   │
+│ (Built-in)      │   │ (Built-in)      │   │                 │
+├─────────────────┤   ├─────────────────┤   ├─────────────────┤
+│ • ASCII spaces  │   │ • + CJK support │   │ • UAX #14 impl  │
+│ • \n mandatory  │   │ • + punctuation │   │ • ICU wrapper   │
+│ • ~50 lines     │   │ • ~150 lines    │   │ • Platform API  │
+│                 │   │                 │   │                 │
+│ Embedded ✓      │   │ Desktop ✓       │   │ i18n ✓          │
+└─────────────────┘   └─────────────────┘   └─────────────────┘
+```
+
+### GUI Integration
+
+Word wrap composes `LineBreaker` + `TextProvider`:
+
+```zig
+fn wrapText(
+    text: []const u8,
+    max_width: f32,
+    line_breaker: LineBreaker,
+    text_provider: TextProvider,
+    font_id: u16,
+    size: f32,
+) []Line {
+    // 1. Get break points from line_breaker
+    var breaks: [256]LineBreaker.BreakPoint = undefined;
+    const break_count = line_breaker.findBreakPoints(text, &breaks);
+
+    // 2. Measure segments using text_provider
+    // 3. Accumulate until overflow
+    // 4. Return line positions
+}
+```
+
+### Memory Budget
+
+```
+LineBreaker.BreakPoint:  8 bytes
+LineBreaker.VTable:      8 bytes  (1 function pointer)
+LineBreaker:            16 bytes
+
+Typical buffer (64 break points): 512 bytes
+```
+
+---
+
 ## Implementation Plan
 
 ### Phase 1: Core Infrastructure
@@ -190,14 +300,16 @@ pub const TextProvider = struct {
 
 ## Open Decisions
 
-### 1. Line Breaking
+### 1. ~~Line Breaking~~ ✓ RESOLVED
 
-**Options**:
-- A) In TextProvider (cosmic-text approach)
-- B) In GUI layer (Dear ImGui approach)
-- C) Separate LineBreaker interface
+**Decision**: BYOL (Bring Your Own Line Breaker)
 
-**Recommendation**: B (GUI layer). The GUI has container width context. Provider just measures words.
+Separate `LineBreaker` interface, consistent with BYOR/BYOT philosophy.
+- Ships with `SimpleBreaker` (ASCII) and `GreedyBreaker` (CJK)
+- Users can bring UAX #14, ICU, or platform implementations
+- GUI provides `wrapText()` helper that composes LineBreaker + TextProvider
+
+See "Line Breaking: BYOL" section above for full specification.
 
 ### 2. Font Fallback
 

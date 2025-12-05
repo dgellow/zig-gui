@@ -57,6 +57,36 @@ Our unique constraint: **32KB embedded to 1MB desktop** in a single codebase. Mo
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### The "Bring Your Own" Philosophy
+
+zig-gui uses pluggable interfaces for areas where requirements vary dramatically:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         "BRING YOUR OWN" STACK                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐           │
+│  │      BYOR       │   │      BYOT       │   │      BYOL       │           │
+│  │    Renderer     │   │      Text       │   │  Line Breaker   │           │
+│  └────────┬────────┘   └────────┬────────┘   └────────┬────────┘           │
+│           │                     │                     │                     │
+│     ┌─────┴─────┐         ┌─────┴─────┐         ┌─────┴─────┐              │
+│     │           │         │           │         │           │              │
+│     ▼           ▼         ▼           ▼         ▼           ▼              │
+│  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐               │
+│  │OpenGL│  │Softw.│  │Bitmap│  │ STB  │  │Simple│  │ UAX  │               │
+│  │Vulkan│  │Raster│  │ Font │  │ SDF  │  │Greedy│  │ #14  │               │
+│  │Metal │  │      │  │      │  │      │  │      │  │ ICU  │               │
+│  └──────┘  └──────┘  └──────┘  └──────┘  └──────┘  └──────┘               │
+│                                                                             │
+│  Embedded: Software + Bitmap + Simple                                       │
+│  Desktop:  OpenGL + STB + Greedy                                           │
+│  i18n:     OpenGL + STB + UAX#14/ICU                                       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Approaches from Research
 
 #### 1. Bitmap Atlas (Classic Dear ImGui)
@@ -304,14 +334,29 @@ zig build-exe -lc -lm -I. stb_truetype_impl.c 05_stb_integration.zig -femit-bin=
 ./05_stb_integration
 ```
 
+### Experiment 7: Line Breaking Interface (`07_line_breaker.zig`)
+
+Validates the BYOL (Bring Your Own Line Breaker) pattern:
+- Defines minimal `LineBreaker` interface (1 function)
+- Implements `SimpleBreaker` for ASCII/Latin (~50 lines)
+- Implements `GreedyBreaker` with CJK support (~150 lines)
+- Demonstrates `wrapText()` composing LineBreaker + TextProvider
+- Zero allocation in hot path
+
+```bash
+zig run experiments/text_rendering/07_line_breaker.zig
+```
+
 ---
 
 ## Open Questions to Resolve
 
-1. **Where does line breaking live?**
-   - In TextProvider? (cosmic-text approach)
-   - In GUI layer? (Dear ImGui approach)
-   - Separate LineBreaker interface?
+1. **~~Where does line breaking live?~~** ✓ RESOLVED
+   - **Answer: BYOL (Bring Your Own Line Breaker)**
+   - Separate `LineBreaker` interface, consistent with BYOR/BYOT pattern
+   - Ships with `SimpleBreaker` (ASCII) and `GreedyBreaker` (CJK)
+   - Users can bring UAX #14, ICU, or platform implementations
+   - See experiment 07 and DESIGN_OPTIONS.md
 
 2. **How do we handle text input cursors?**
    - `getCharPositions()` is O(n) for every cursor move
